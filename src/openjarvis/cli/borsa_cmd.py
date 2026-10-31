@@ -53,3 +53,126 @@ def analiz(symbol: str, period: str, as_json: bool) -> None:
         click.echo(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         click.echo(analysis.format_report(result))
+
+
+# -- alarms -------------------------------------------------------------------
+
+
+@borsa.group("alarm")
+def alarm() -> None:
+    """Seviye alarmları: fiyat / RSI eşikleri (Telegram + tarayıcı bildirimi)."""
+
+
+@alarm.command("ekle")
+@click.argument("kural", nargs=-1, required=True)
+@click.option("--tekrar", is_flag=True,
+              help="Tetiklenince kapanmasın, bekleme süresi sonunda yine bildirsin.")
+@click.option("--bekleme", "cooldown", type=int, default=60, show_default=True,
+              help="Tekrarlı alarmda iki bildirim arası dakika.")
+@click.option("--not", "note", default="", help="Bildirime eklenecek kısa not.")
+def alarm_ekle(kural: tuple[str, ...], tekrar: bool, cooldown: int, note: str) -> None:
+    """Alarm ekle. Örnekler:
+
+    \b
+      jarvis borsa alarm ekle THYAO 230 altına
+      jarvis borsa alarm ekle dolar 50 üstüne --tekrar
+      jarvis borsa alarm ekle ASELS rsi 30 altı
+    """
+    from openjarvis.borsa import alarms, data
+
+    try:
+        rule = alarms.parse_rule(" ".join(kural))
+        a = alarms.AlarmStore().add(
+            **rule, mode="tekrar" if tekrar else "tek",
+            cooldown_min=cooldown, note=note,
+        )
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    mode = ("tek seferlik" if a.mode == "tek"
+            else f"tekrarlı, {a.cooldown_min} dk bekleme")
+    click.echo(f"Eklendi [{a.id}] {a.describe()} ({mode})")
+
+
+@alarm.command("liste")
+@click.option("--hepsi", is_flag=True, help="Tetiklenip kapanmış alarmları da göster.")
+def alarm_liste(hepsi: bool) -> None:
+    """Alarmları listele."""
+    from openjarvis.borsa import alarms
+
+    items = [a for a in alarms.AlarmStore().load() if hepsi or a.active]
+    if not items:
+        click.echo("Alarm yok.")
+        return
+    for a in items:
+        state = "açık" if a.active else "kapandı"
+        extra = f" | son değer {a.last_value:g}" if a.last_value is not None else ""
+        if a.last_triggered:
+            extra += f" | son tetik {a.last_triggered[:16]}"
+        click.echo(f"[{a.id}] {a.describe():<32} {a.mode:<6} {state}{extra}")
+
+
+@alarm.command("sil")
+@click.argument("alarm_ids", nargs=-1, required=True)
+def alarm_sil(alarm_ids: tuple[str, ...]) -> None:
+    """Alarm sil (kimlik 'liste' çıktısında)."""
+    from openjarvis.borsa import alarms
+
+    store = alarms.AlarmStore()
+    missing = [i for i in alarm_ids if not store.remove(i)]
+    for i in alarm_ids:
+        if i not in missing:
+            click.echo(f"Silindi: {i}")
+    if missing:
+        raise click.ClickException(f"Bulunamadı: {', '.join(missing)}")
+
+
+@alarm.command("kontrol")
+@click.option("--seans-disi", "ignore_session", is_flag=True,
+              help="BIST seans saati dışında da hisse alarmlarını kontrol et.")
+@click.option("--telegramsiz", "no_telegram", is_flag=True,
+              help="Telegram'a gönderme, sadece ekrana yaz.")
+def alarm_kontrol(ignore_session: bool, no_telegram: bool) -> None:
+    """Alarmları şimdi bir kez kontrol et ve tetiklenenleri bildir."""
+    from openjarvis.borsa import alarms
+
+    sent: list = []
+
+    def telegram(events):  # noqa: ANN001, ANN202
+        sent.append(alarms.send_telegram(events))
+
+    result = alarms.run_check(
+        notifiers=() if no_telegram else (telegram,),
+        ignore_session=ignore_session,
+    )
+    for ev in result.triggered:
+        click.echo(ev.message)
+    for alarm_id, err in result.errors.items():
+        click.echo(f"[{alarm_id}] HATA - {err}", err=True)
+    click.echo(
+        f"Kontrol: {result.checked}, tetiklenen: {len(result.triggered)}, "
+        f"atlanan: {len(result.skipped)} (seans dışı / bekleme)"
+    )
+    if sent and sent[0] is None:
+        click.echo("Telegram ayarlı değil (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID); "
+                   "bildirim yalnızca tarayıcıya düştü.", err=True)
+    elif sent and sent[0] is False:
+        click.echo("Telegram gönderimi başarısız.", err=True)
+
+
+@alarm.command("izle")
+@click.option("--aralik", "interval", type=int, default=300, show_default=True,
+              help="Kontrol aralığı (saniye, en az 30).")
+def alarm_izle(interval: int) -> None:
+    """Ön planda periyodik kontrol (Ctrl+C durdurur; 'jarvis serve' açıksa gerekmez)."""
+    import time
+
+    from openjarvis.borsa import alarms
+
+    watcher = alarms.AlarmWatcher(interval=interval)
+    click.echo(f"Alarm izleniyor ({max(30, interval)} sn aralık). Durdurmak: Ctrl+C.")
+    watcher.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        watcher.stop()

@@ -178,8 +178,13 @@ def test_quote_drops_none_and_stringifies_time(fake_bp):
 
 
 def test_tools_registered_and_execute(fake_bp):
-    import openjarvis.tools  # noqa: F401
+    import importlib
+
+    import openjarvis.tools.borsa_tool as borsa_tool
     from openjarvis.core.registry import ToolRegistry
+
+    # conftest clears registries per test; re-run the decorators.
+    importlib.reload(borsa_tool)
 
     quote_tool = ToolRegistry.get("borsa_fiyat")()
     res = quote_tool.execute(symbol="altın")
