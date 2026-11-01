@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OpenJarvis Midas Paneli",
-  "version": "0.1.0",
-  "description": "Midas sayfasında salt-okur BIST/döviz/altın fiyat ve alarm paneli. Emir vermez.",
+  "version": "0.2.0",
+  "description": "Midas sayfasında BIST/döviz/altın fiyat ve alarm paneli, artı SANAL (kağıt) alım-satım. Midas hesabınıza erişmez, gerçek emir vermez.",
   "permissions": ["sidePanel", "storage"],
   "host_permissions": [
     "http://127.0.0.1:8000/*",

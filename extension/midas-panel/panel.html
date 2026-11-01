@@ -12,8 +12,9 @@
     </header>
 
     <p class="disclaimer">
-      Salt-okur panel — emir vermez, Midas hesabınıza erişmez. Fiyatlar
-      ~15 dk gecikmelidir. Yatırım tavsiyesi değildir.
+      Midas hesabınıza erişmez, gerçek emir vermez. "Al"/"Sat" butonları
+      tamamen SANAL bir portföy üzerindedir. Fiyatlar ~15 dk gecikmelidir.
+      Yatırım tavsiyesi değildir.
     </p>
 
     <section>
@@ -24,6 +25,7 @@
             <th>Sembol</th>
             <th>Son</th>
             <th>Değişim</th>
+            <th></th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -32,6 +34,26 @@
         Henüz alarm eklenmedi — <code>jarvis borsa alarm ekle</code> ile
         ekleyin.
       </p>
+    </section>
+
+    <section>
+      <h2>Sanal portföy</h2>
+      <div id="portfolio-summary" class="summary"></div>
+      <table id="portfolio-positions">
+        <thead>
+          <tr>
+            <th>Sembol</th>
+            <th>Adet</th>
+            <th>Ort. maliyet</th>
+            <th>Son</th>
+            <th>K/Z</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="portfolio-empty" class="empty" hidden>Açık sanal pozisyon yok.</p>
+      <button id="portfolio-reset" type="button">Portföyü sıfırla</button>
     </section>
 
     <section>

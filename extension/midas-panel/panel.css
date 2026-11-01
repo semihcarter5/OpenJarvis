@@ -98,6 +98,48 @@ td.down {
   font-size: 12px;
 }
 
+.summary {
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+
+.summary .pnl-up {
+  color: var(--up);
+}
+
+.summary .pnl-down {
+  color: var(--down);
+}
+
+button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--border);
+}
+
+button.buy {
+  color: var(--up);
+  border-color: var(--up);
+}
+
+button.sell {
+  color: var(--down);
+  border-color: var(--down);
+}
+
+#portfolio-reset {
+  margin-top: 8px;
+}
+
 footer {
   margin-top: 16px;
   display: flex;

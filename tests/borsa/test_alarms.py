@@ -385,6 +385,77 @@ def test_http_turnuva_no_symbols_is_400(store):
     assert client.get("/api/borsa/turnuva").status_code == 400
 
 
+def test_http_portfoy_al_sat_sifirla(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    empty = client.get("/api/borsa/portfoy").json()
+    assert empty["positions"] == [] and empty["cash"] == 100_000.0
+
+    buy = client.post("/api/borsa/portfoy/al", json={"sembol": "THYAO", "tutar": 1000})
+    assert buy.status_code == 200
+    assert buy.json()["side"] == "al"
+
+    after_buy = client.get("/api/borsa/portfoy").json()
+    assert after_buy["positions"][0]["symbol"] == "THYAO"
+
+    sell = client.post("/api/borsa/portfoy/sat", json={"sembol": "THYAO"})
+    assert sell.status_code == 200
+    assert sell.json()["side"] == "sat"
+
+    reset = client.post("/api/borsa/portfoy/sifirla", json={"bakiye": 50000})
+    assert reset.status_code == 200
+    assert reset.json()["cash"] == 50_000.0
+
+
+def test_http_portfoy_al_insufficient_balance_is_400(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.post("/api/borsa/portfoy/al", json={"sembol": "THYAO", "tutar": 1_000_000})
+    assert res.status_code == 400
+
+
+def test_http_portfoy_al_rejects_non_positive_amount(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.post("/api/borsa/portfoy/al", json={"sembol": "THYAO", "tutar": -5})
+    assert res.status_code == 422  # pydantic Field(gt=0) validation
+
+
+def test_http_portfoy_sat_without_position_is_400(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.post("/api/borsa/portfoy/sat", json={"sembol": "THYAO"})
+    assert res.status_code == 400
+
+
 def test_http_izleme_reports_provider_error_without_failing(store):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

@@ -254,3 +254,70 @@ def turnuva_izle(weekday: str, hour: int, period: str) -> None:
             time.sleep(1)
     except KeyboardInterrupt:
         watcher.stop()
+
+
+# -- paper (virtual) portfolio ----------------------------------------------
+
+
+@borsa.group("portfoy")
+def portfoy() -> None:
+    """SANAL (kağıt üzerinde) alım-satım portföyü. Gerçek para veya emir
+    içermez; sadece gerçek (gecikmeli) fiyatlarla kar/zarar simüle eder."""
+
+
+@portfoy.command("goster")
+def portfoy_goster() -> None:
+    """Portföy özeti: nakit, pozisyonlar, kar/zarar."""
+    from openjarvis.borsa import portfolio
+
+    click.echo(portfolio.format_summary(portfolio.PaperPortfolio().summary()))
+
+
+@portfoy.command("al")
+@click.argument("symbol")
+@click.argument("tutar", type=float)
+def portfoy_al(symbol: str, tutar: float) -> None:
+    """SANAL alım. Örnek: jarvis borsa portfoy al THYAO 5000"""
+    from openjarvis.borsa import data, portfolio
+
+    try:
+        trade = portfolio.PaperPortfolio().buy(symbol, tutar)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"SANAL alım: {trade.quantity:.4f} {trade.symbol} @ {trade.price:g} "
+        f"({trade.amount:.2f} TL)"
+    )
+
+
+@portfoy.command("sat")
+@click.argument("symbol")
+@click.option("--miktar", type=float, default=None,
+              help="Verilmezse pozisyonun tamamı satılır.")
+def portfoy_sat(symbol: str, miktar: float | None) -> None:
+    """SANAL satış. Örnek: jarvis borsa portfoy sat THYAO"""
+    from openjarvis.borsa import data, portfolio
+
+    try:
+        trade = portfolio.PaperPortfolio().sell(symbol, miktar)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    pnl = trade.realized_pnl or 0.0
+    click.echo(
+        f"SANAL satış: {trade.quantity:.4f} {trade.symbol} @ {trade.price:g} "
+        f"({trade.amount:.2f} TL, gerçekleşen K/Z {pnl:+,.2f} TL)"
+    )
+
+
+@portfoy.command("sifirla")
+@click.option("--bakiye", type=float, default=None, show_default="100000",
+              help="Yeni başlangıç bakiyesi (TL).")
+def portfoy_sifirla(bakiye: float | None) -> None:
+    """Portföyü sıfırlayıp yeni bir sanal bakiyeyle baştan başlat."""
+    from openjarvis.borsa import data, portfolio
+
+    try:
+        portfolio.PaperPortfolio().reset(bakiye or portfolio.DEFAULT_BALANCE)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Sıfırlandı: {bakiye or portfolio.DEFAULT_BALANCE:,.2f} TL sanal bakiye.")

@@ -1,29 +1,49 @@
-"""FastAPI routes for borsa quotes, analysis and level alarms.
+"""FastAPI routes for borsa quotes, analysis, level alarms and the paper
+portfolio.
 
-Every route here is read-only: no order placement, no write access to a
-brokerage. Intended for the Midas side-panel browser extension and the
-desktop UI's polling feed.
+Every route is read-only EXCEPT the /portfoy/al, /portfoy/sat and
+/portfoy/sifirla writes, which only ever touch a local, purely virtual
+paper-trading ledger (openjarvis.borsa.portfolio) - no order placement, no
+write access to a real brokerage, ever. Intended for the Midas side-panel
+browser extension and the desktop UI's polling feed.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from dataclasses import asdict
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 _SYMBOL_QUERY = Query(..., min_length=1, max_length=20, alias="sembol")
 
 
+class _BuyRequest(BaseModel):
+    sembol: str = Field(min_length=1, max_length=20)
+    tutar: float = Field(gt=0)
+
+
+class _SellRequest(BaseModel):
+    sembol: str = Field(min_length=1, max_length=20)
+    miktar: float | None = Field(default=None, gt=0)
+
+
+class _ResetRequest(BaseModel):
+    bakiye: float = Field(default=100_000.0, gt=0)
+
+
 def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
-    """Read-only quote/analysis/alarm endpoints for the Midas side panel."""
-    from openjarvis.borsa import analysis, data
+    """Quote/analysis/alarm/paper-portfolio endpoints for the Midas side panel."""
+    from openjarvis.borsa import analysis, data, portfolio
     from openjarvis.borsa.alarms import AlarmStore
 
     router = APIRouter(prefix="/api/borsa", tags=["borsa"])
     store = store or AlarmStore()
+    paper = portfolio.PaperPortfolio()
 
     @router.get("/fiyat")
     async def fiyat(sembol: str = _SYMBOL_QUERY):
@@ -75,6 +95,36 @@ def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
                 detail="Sembol yok: ?sembol= ile verin ya da önce alarm ekleyin.",
             )
         return tournament.run_tournament(symbols, period=period)
+
+    @router.get("/portfoy")
+    async def portfoy_goster():
+        """SANAL (virtual) portfolio summary: cash, positions, P&L."""
+        return paper.summary()
+
+    @router.post("/portfoy/al")
+    async def portfoy_al(body: _BuyRequest):
+        """Buy with virtual TRY at the current (delayed) price. No real order."""
+        try:
+            return asdict(paper.buy(body.sembol, body.tutar))
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/portfoy/sat")
+    async def portfoy_sat(body: _SellRequest):
+        """Sell a virtual position (or part of it). No real order."""
+        try:
+            return asdict(paper.sell(body.sembol, body.miktar))
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/portfoy/sifirla")
+    async def portfoy_sifirla(body: _ResetRequest = _ResetRequest()):
+        """Reset the virtual portfolio to a fresh starting balance."""
+        try:
+            paper.reset(body.bakiye)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return paper.summary()
 
     @router.get("/alarm/olaylar")
     async def events(after: str = Query("", max_length=64)):
