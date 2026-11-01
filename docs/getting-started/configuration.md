@@ -465,6 +465,23 @@ jarvis serve --host 127.0.0.1 --port 9000 --model qwen3:8b --agent simple
 
 ---
 
+### `[analytics]` — Optional External Usage Analytics
+
+External analytics default to off. Interactive Bash installation and `jarvis
+init` ask whether to share: **Press Enter or Y to consent, or N to decline**.
+Unattended runs do not consent automatically; `--analytics` explicitly enables
+sharing and `--no-analytics` declines it.
+
+```toml
+[analytics]
+enabled = false
+```
+
+Use `jarvis config set analytics.enabled true` to enable sharing or `false` to
+disable it, then restart the server and reload the frontend. This setting is
+independent of local telemetry and leaderboard participation. See
+[Telemetry](../telemetry.md) for the event catalog and sharing details.
+
 ### `[telemetry]` — Telemetry Persistence
 
 Controls whether inference telemetry is recorded and where it is stored.
@@ -1132,7 +1149,10 @@ OpenJarvis respects the following environment variables:
 | `YOUDOTCOM_API_KEY` | API key for the You.com web search engine. Optional — raises the keyless free-tier limits and enables You.com Contents extraction for URL queries. |
 | `SERPLY_API_KEY` | API key for the Serply web search engine, which proxies Google. Optional. When set and no other search key is, `auto` engine selection prefers Serply over the keyless tier. Keys: [serply.io](https://serply.io). |
 | `SERPLY_PROXY_LOCATION` | Two-letter country code asking Serply for that country's Google result set, for example `DE`. Optional. Unset means the API answers from its own default region. See [serply.io/docs](https://serply.io/docs). |
-| `OPENJARVIS_WEB_SEARCH_ENGINE` | Web search engine for the `web_search` tool: `auto` (default), `youcom`, `tavily`, `serply`, or `duckduckgo`. |
+| `FXMACRODATA_API_KEY` | API key for the `fx_macro_data` tool. Optional: recent USD releases, the USD release calendar and every currency's indicator catalogue work without it. The key unlocks other currencies, full history and FX rates. Keys: [fxmacrodata.com](https://fxmacrodata.com/subscribe). |
+| `FIRECRAWL_API_KEY` | API key for the Firecrawl web search engine. Optional. When set and no other search key is, `auto` engine selection prefers Firecrawl over the keyless tier, and URL queries return the page or PDF as markdown. Keys: [firecrawl.dev](https://www.firecrawl.dev/app/api-keys?utm_source=openjarvis&utm_medium=integration). |
+| `FIRECRAWL_API_URL` | Base URL of the Firecrawl API, for example a [self-hosted Firecrawl](https://docs.firecrawl.dev/contributing/self-host). Optional. Defaults to `https://api.firecrawl.dev`. Any other URL enables the Firecrawl engine without a key, for instances that run without auth. |
+| `OPENJARVIS_WEB_SEARCH_ENGINE` | Web search engine for the `web_search` tool: `auto` (default), `youcom`, `tavily`, `serply`, `firecrawl`, or `duckduckgo`. |
 
 In the desktop app, you can save `ATLASCLOUD_API_KEY` in **Cloud Models** or
 **Settings → API Keys** instead of setting an environment variable.

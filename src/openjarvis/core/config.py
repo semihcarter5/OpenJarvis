@@ -1216,11 +1216,13 @@ class AnalyticsConfig:
     usage events sent to the OpenJarvis team's PostHog instance to
     measure setup success, retention, feature usage, and churn.
 
-    No chat content, prompts, model outputs, file paths, emails, IPs,
-    or hardware identifiers are ever sent. See ``docs/telemetry.md``.
+    Backend properties are limited to declared usage metadata; external
+    SDKs may add environment metadata. See ``docs/telemetry.md`` for the
+    safeguards, destination, and sharing controls.
     """
 
-    enabled: bool = True
+    enabled: bool = False
+    choice_recorded: bool = False
     host: str = "https://34.231.106.201.sslip.io"
     key: str = "phc_ysKu72QaxzYNmDpHFcesD2ZZAe68zkdWJEKoYYkc5e3n"
     anon_id_path: str = field(default_factory=lambda: str(get_config_dir() / "anon_id"))
@@ -1449,6 +1451,8 @@ class SecurityConfig:
     local_engine_bypass: bool = False
     local_tool_bypass: bool = False
     profile: str = ""
+    # Directories file_read/file_write may touch; empty means unrestricted.
+    allowed_dirs: List[str] = field(default_factory=list)
     vault_key_path: str = field(
         default_factory=lambda: str(get_config_dir() / ".vault_key")
     )
@@ -1591,7 +1595,12 @@ class SessionConfig:
 
 @dataclass(slots=True)
 class A2AConfig:
-    """Agent-to-Agent protocol settings."""
+    """Settings for A2A integrations and configuration diagnostics.
+
+    The built-in ``jarvis serve`` app does not mount A2A endpoints; ``enabled``
+    does not change that app's route surface. Library integrations using
+    ``A2AServer`` must configure their transport and authentication explicitly.
+    """
 
     enabled: bool = False
     # Bearer token required for inbound A2A requests. Empty = unauthenticated
@@ -1624,7 +1633,7 @@ class SpeechConfig:
     # back to a different backend that backend's own default voice is used.
     # Kokoro IDs: bm_george / bm_lewis (British male), bf_emma / bf_isabella
     # (British female), af_* / am_* (American).
-    tts_backend: str = "kokoro"  # "kokoro", "openai_tts", "cartesia"
+    tts_backend: str = "kokoro"  # "kokoro", "openai_tts", "cartesia", "elevenlabs"
     voice_id: str = "bm_george"
     voice_speed: float = 1.0
 
@@ -1801,6 +1810,20 @@ class JarvisConfig:
     @_config_dir.setter
     def _config_dir(self, value: Path) -> None:
         self.__dict__["_config_source_dir"] = Path(value)
+
+    @property
+    def _config_path(self) -> Path:
+        """Loaded config file, or the configured default for new instances."""
+        source = self.__dict__.get("_config_source_path")
+        if source is not None:
+            return source
+        if custom_path := os.environ.get("OPENJARVIS_CONFIG"):
+            return Path(custom_path).expanduser().resolve()
+        return get_config_path()
+
+    @_config_path.setter
+    def _config_path(self, value: Path) -> None:
+        self.__dict__["_config_source_path"] = Path(value)
 
     @property
     def memory(self) -> StorageConfig:
@@ -2068,6 +2091,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
         config_path = Path(os.environ["OPENJARVIS_CONFIG"]).expanduser().resolve()
     else:
         config_path = get_config_path()
+    cfg._config_path = config_path
     cfg._config_dir = config_path.parent
     if config_path.exists():
         with open(config_path, "rb") as fh:

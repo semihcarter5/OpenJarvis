@@ -49,6 +49,15 @@ def test_browser_meta_group():
     assert "browser_navigate" not in names
 
 
+def test_tools_endpoint_includes_knowledge_search_and_proactive_tools():
+    from openjarvis.server.agent_manager_routes import build_tools_list
+
+    tools = build_tools_list()
+    names = {t["name"] for t in tools}
+    assert "knowledge_search" in names
+    assert "check_permission" in names
+
+
 def test_web_search_available_without_tavily_key(monkeypatch):
     """DuckDuckGo fallback keeps web search usable without Tavily."""
     from openjarvis.server.agent_manager_routes import build_tools_list
@@ -86,8 +95,8 @@ def test_weather_tool_picker_recognizes_connector_credential(tmp_path, monkeypat
 def test_tool_credentials_browser_lifecycle(tmp_path, monkeypatch):
     """The browser API can save, report, and remove a Tavily key.
 
-    ``web_search`` declares You.com and Serply keys alongside it, so status
-    reports all three.
+    ``web_search`` declares You.com, Serply and Firecrawl keys alongside it, so
+    status reports all four.
     """
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -98,6 +107,7 @@ def test_tool_credentials_browser_lifecycle(tmp_path, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("YOUDOTCOM_API_KEY", raising=False)
     monkeypatch.delenv("SERPLY_API_KEY", raising=False)
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     app = FastAPI()
     tools_router = create_agent_manager_router(MagicMock())[3]
     app.include_router(tools_router)
@@ -113,6 +123,7 @@ def test_tool_credentials_browser_lifecycle(tmp_path, monkeypatch):
         "TAVILY_API_KEY": True,
         "YOUDOTCOM_API_KEY": False,
         "SERPLY_API_KEY": False,
+        "FIRECRAWL_API_KEY": False,
     }
 
     deleted = client.delete(
@@ -124,6 +135,7 @@ def test_tool_credentials_browser_lifecycle(tmp_path, monkeypatch):
         "TAVILY_API_KEY": False,
         "YOUDOTCOM_API_KEY": False,
         "SERPLY_API_KEY": False,
+        "FIRECRAWL_API_KEY": False,
     }
 
 

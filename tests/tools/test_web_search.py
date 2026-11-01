@@ -24,6 +24,13 @@ def _no_ambient_serply_key(monkeypatch):
     monkeypatch.delenv("SERPLY_PROXY_LOCATION", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_firecrawl_key(monkeypatch):
+    """Same guard as above for the Firecrawl env, for the same reason (#972)."""
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+
+
 class TestWebSearchTool:
     def test_spec_name_and_category(self):
         tool = WebSearchTool(api_key="test-key")
@@ -805,6 +812,39 @@ class TestEngineSelection:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         assert WebSearchTool()._resolve_engine() == "youcom"
 
+    def test_auto_prefers_firecrawl_over_the_keyless_tier(self, monkeypatch):
+        """A Firecrawl key only ever wins over having no key at all."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("YOUDOTCOM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENJARVIS_WEB_SEARCH_ENGINE", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        assert WebSearchTool()._resolve_engine() == "firecrawl"
+
+    def test_firecrawl_never_displaces_an_existing_keyed_engine(self, monkeypatch):
+        """Adding a Firecrawl key must not change where an install already goes."""
+        monkeypatch.delenv("OPENJARVIS_WEB_SEARCH_ENGINE", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-x")
+        monkeypatch.setenv("YOUDOTCOM_API_KEY", "ydc-key")
+        monkeypatch.setenv("SERPLY_API_KEY", "srp-x")
+        assert WebSearchTool()._resolve_engine() == "tavily"
+
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        assert WebSearchTool()._resolve_engine() == "youcom"
+
+        monkeypatch.delenv("YOUDOTCOM_API_KEY", raising=False)
+        assert WebSearchTool()._resolve_engine() == "serply"
+
+    def test_auto_uses_a_keyless_self_hosted_firecrawl(self, monkeypatch):
+        """Self-hosted instances usually run without auth, so pointing
+        FIRECRAWL_API_URL away from the hosted API is enough to opt in."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("YOUDOTCOM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENJARVIS_WEB_SEARCH_ENGINE", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        assert WebSearchTool()._resolve_engine() == "firecrawl"
+
     def test_explicit_engine_overrides_key_presence(self, monkeypatch):
         monkeypatch.setenv("TAVILY_API_KEY", "tvly-x")
         assert WebSearchTool(engine="youcom")._resolve_engine() == "youcom"
@@ -833,6 +873,8 @@ class TestEngineSelection:
         assert "YOUDOTCOM_API_KEY" in spec.metadata["optional_api_keys"]
         assert "SERPLY_API_KEY" in spec.metadata["optional_api_keys"]
         assert "serply" in spec.metadata["engines"]
+        assert "FIRECRAWL_API_KEY" in spec.metadata["optional_api_keys"]
+        assert "firecrawl" in spec.metadata["engines"]
         # Backwards compatible for readers of the old single-key field.
         assert spec.metadata["requires_api_key"] == "TAVILY_API_KEY"
 
@@ -1139,6 +1181,459 @@ class TestSerplySearch:
 
         assert "HTTP 500" in result.metadata["fallback_reason"]
         assert "SERPLY_API_KEY" not in result.metadata["fallback_reason"]
+
+
+class TestFirecrawlSearch:
+    """The Firecrawl engine, exercised against mocked HTTP."""
+
+    PAYLOAD = {
+        "success": True,
+        "data": {
+            "web": [
+                {
+                    "title": "Result A",
+                    "url": "https://example.com/a",
+                    "description": "Desc A",
+                    "position": 1,
+                },
+                {
+                    "title": "Result B",
+                    "url": "https://example.com/b",
+                    "description": "Desc B",
+                    "position": 2,
+                },
+            ]
+        },
+    }
+
+    def _mock_post(self, monkeypatch, payload=None, status=200):
+        import httpx
+
+        calls = {}
+
+        def _post(url, **kwargs):
+            calls["url"] = url
+            calls["json"] = kwargs.get("json")
+            calls["headers"] = kwargs.get("headers")
+            resp = MagicMock()
+            resp.status_code = status
+            resp.json.return_value = payload if payload is not None else self.PAYLOAD
+            if status >= 400:
+                resp.text = "error body"
+                resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                    f"HTTP {status}", request=MagicMock(), response=resp
+                )
+            else:
+                resp.raise_for_status = MagicMock()
+            return resp
+
+        monkeypatch.setattr(httpx, "post", _post)
+        return calls
+
+    def _mock_ddgs(self, monkeypatch):
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.return_value = []
+        mock_module = MagicMock()
+        mock_module.DDGS.return_value = mock_ddgs
+        monkeypatch.setitem(sys.modules, "ddgs", mock_module)
+
+    def test_endpoint_auth_and_origin(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        calls = self._mock_post(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="test query")
+
+        assert result.success is True
+        assert calls["url"] == "https://api.firecrawl.dev/v2/search"
+        assert calls["headers"]["Authorization"] == "Bearer fc-test"
+        assert calls["json"]["origin"] == "openjarvis"
+        assert result.metadata["engine"] == "firecrawl"
+
+    def test_pasted_key_whitespace_is_trimmed(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "  fc-test\n")
+        calls = self._mock_post(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="test query")
+
+        assert result.success is True
+        assert calls["headers"]["Authorization"] == "Bearer fc-test"
+
+    def test_result_format_matches_the_other_engines(self, monkeypatch):
+        """Same labeled Source/Summary shape agents already parse (#390)."""
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="test query")
+
+        assert "### Result A" in result.content
+        assert "Source: https://example.com/a" in result.content
+        assert "Summary: Desc A" in result.content
+        assert "### Result B" in result.content
+        assert result.metadata["num_results"] == 2
+
+    def test_max_results_passed_as_limit(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        calls = self._mock_post(monkeypatch)
+        WebSearchTool(engine="firecrawl", max_results=3).execute(
+            query="q", max_results=7
+        )
+        assert calls["json"] == {"query": "q", "limit": 7, "origin": "openjarvis"}
+
+    def test_self_hosted_api_url(self, monkeypatch):
+        """FIRECRAWL_API_URL points search at a self-hosted instance."""
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002/")
+        calls = self._mock_post(monkeypatch)
+
+        WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert calls["url"] == "http://localhost:3002/v2/search"
+
+    def test_keyless_self_hosted_sends_no_auth_header(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        calls = self._mock_post(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert result.metadata["engine"] == "firecrawl"
+        assert "Authorization" not in calls["headers"]
+
+    def test_long_descriptions_are_capped(self, monkeypatch):
+        """Descriptions can carry thousands of characters of page text; five
+        of them must still fit a small model's context."""
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        payload = {
+            "data": {
+                "web": [
+                    {
+                        "title": "Long",
+                        "url": "https://e.com",
+                        "description": "x" * 10000,
+                    }
+                ]
+            }
+        }
+        self._mock_post(monkeypatch, payload=payload)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert "x" * 500 + "…" in result.content
+        assert "x" * 501 not in result.content
+
+    def test_credits_are_reported(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch, payload={**self.PAYLOAD, "creditsUsed": 2})
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+        assert result.metadata["credits"] == 2
+
+    def test_missing_key_is_named_without_a_request(self, monkeypatch):
+        """An explicit firecrawl engine with no key against the hosted API
+        should say the key is missing, not that it was rejected."""
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "post", MagicMock(side_effect=AssertionError("must not be called"))
+        )
+        self._mock_ddgs(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert result.metadata["fallback_reason"] == "FIRECRAWL_API_KEY is not set"
+
+    def test_empty_results(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch, payload={"success": True, "data": {"web": []}})
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+        assert result.success is True
+        assert result.content == "No results found."
+
+    def test_rejected_key_names_the_env_var(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-bad")
+        self._mock_post(monkeypatch, status=401)
+        self._mock_ddgs(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert result.metadata["fallback_from"] == "firecrawl"
+        assert result.metadata["degraded"] is True
+        assert "FIRECRAWL_API_KEY" in result.metadata["fallback_reason"]
+
+    def test_exhausted_credits_point_to_the_key_page(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch, status=402)
+        self._mock_ddgs(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        reason = result.metadata["fallback_reason"]
+        assert "credits" in reason
+        assert "firecrawl.dev/app/api-keys" in reason
+
+    def test_rate_limit_is_named(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch, status=429)
+        self._mock_ddgs(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert "rate limit" in result.metadata["fallback_reason"]
+
+    def test_other_http_error_reports_the_status(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_post(monkeypatch, status=500)
+        self._mock_ddgs(monkeypatch)
+
+        result = WebSearchTool(engine="firecrawl").execute(query="q")
+
+        assert "HTTP 500" in result.metadata["fallback_reason"]
+        assert "FIRECRAWL_API_KEY" not in result.metadata["fallback_reason"]
+
+
+class TestFirecrawlScrapeExtraction:
+    def _mock_ssrf(self, monkeypatch):
+        import openjarvis.tools.web_search as _ws
+
+        monkeypatch.setattr(_ws, "check_ssrf", lambda url: None)
+
+    def _mock_scrape(self, monkeypatch, markdown):
+        import httpx
+
+        resp = MagicMock()
+        resp.json.return_value = {"success": True, "data": {"markdown": markdown}}
+        resp.raise_for_status = MagicMock()
+        post = MagicMock(return_value=resp)
+        monkeypatch.setattr(httpx, "post", post)
+        return post
+
+    def test_scrape_used_for_url_queries(self, monkeypatch):
+        """URL queries come back as markdown instead of the regex HTML strip."""
+        self._mock_ssrf(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        post = self._mock_scrape(monkeypatch, "# Heading\n\nBody text.")
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="https://example.com/a.pdf"
+        )
+
+        assert result.success is True
+        assert result.content == "# Heading\n\nBody text."
+        assert result.metadata["extractor"] == "firecrawl_scrape"
+        assert post.call_args.args[0] == "https://api.firecrawl.dev/v2/scrape"
+        assert post.call_args.kwargs["json"] == {
+            "url": "https://example.com/a.pdf",
+            "formats": ["markdown"],
+            "onlyMainContent": True,
+            "parsers": [{"type": "pdf", "maxPages": 3}],
+            "timeout": 45000,
+            "origin": "openjarvis",
+        }
+
+    def test_scrape_output_is_truncated_like_the_local_fetch(self, monkeypatch):
+        """A long PDF must not flood a small model's context."""
+        self._mock_ssrf(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        self._mock_scrape(monkeypatch, "x" * 10000)
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="https://example.com/a"
+        )
+
+        assert result.content.startswith("x" * 6000)
+        assert result.content.endswith("[Content truncated]")
+        assert len(result.content) < 6100
+
+    def test_keyless_self_hosted_scrape(self, monkeypatch):
+        self._mock_ssrf(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        post = self._mock_scrape(monkeypatch, "# Self-hosted")
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="https://example.com/a"
+        )
+
+        assert result.content == "# Self-hosted"
+        assert post.call_args.args[0] == "http://localhost:3002/v2/scrape"
+        assert "Authorization" not in post.call_args.kwargs["headers"]
+
+    def test_url_query_without_key_uses_local_fetch(self, monkeypatch):
+        """Explicit firecrawl with no key and the hosted URL never calls the
+        API for URL queries; the local fetch handles them as before."""
+        self._mock_ssrf(monkeypatch)
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "post", MagicMock(side_effect=AssertionError("must not be called"))
+        )
+        resp = MagicMock()
+        resp.text = "<html><body>Local text</body></html>"
+        resp.headers = {"content-type": "text/html"}
+        resp.raise_for_status = MagicMock()
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=resp))
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="https://example.com/a"
+        )
+
+        assert result.metadata["extractor"] == "local"
+
+    def test_scrape_failure_falls_back_to_local_fetch(self, monkeypatch):
+        self._mock_ssrf(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "post", MagicMock(side_effect=httpx.ConnectError("down"))
+        )
+        resp = MagicMock()
+        resp.text = "<html><body>Local text</body></html>"
+        resp.headers = {"content-type": "text/html"}
+        resp.raise_for_status = MagicMock()
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=resp))
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="https://example.com/a"
+        )
+
+        assert result.success is True
+        assert "Local text" in result.content
+        assert result.metadata["extractor"] == "local"
+
+    def test_url_branch_ssrf_blocked_before_scrape_call(self, monkeypatch):
+        """The scrape upgrade must not become an SSRF bypass."""
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        import openjarvis.tools.web_search as _ws
+
+        monkeypatch.setattr(_ws, "check_ssrf", lambda url: "private IP blocked")
+        import httpx
+
+        monkeypatch.setattr(
+            httpx, "post", MagicMock(side_effect=AssertionError("must not be called"))
+        )
+
+        result = WebSearchTool(engine="firecrawl").execute(
+            query="http://169.254.169.254/metadata"
+        )
+
+        assert result.success is False
+        assert "private IP blocked" in result.content
+
+
+class TestFirecrawlCredentialSafety:
+    @pytest.mark.parametrize("mode", ["search", "scrape"])
+    @pytest.mark.parametrize("api_key", [None, "fc-test-key"])
+    @pytest.mark.parametrize(
+        "username,password",
+        [("private-user", "private-password"), ("private@user", "private:pass/word")],
+    )
+    def test_successful_basic_auth_never_logs_url_credentials(
+        self, monkeypatch, caplog, mode, api_key, username, password
+    ):
+        import base64
+        from urllib.parse import quote
+
+        import httpx
+
+        requests = []
+        encoded_user = quote(username, safe="")
+        encoded_password = quote(password, safe="")
+        tool = WebSearchTool(
+            engine="firecrawl",
+            firecrawl_api_key=api_key,
+            firecrawl_api_url=(
+                f"https://{encoded_user}:{encoded_password}@example.test/firecrawl"
+            ),
+        )
+
+        def respond(request):
+            requests.append(request)
+            data = {"web": []} if mode == "search" else {"markdown": "Page text"}
+            return httpx.Response(200, json={"success": True, "data": data})
+
+        monkeypatch.setattr("openjarvis.tools.web_search.check_ssrf", lambda url: None)
+        query = "https://example.test/article" if mode == "scrape" else "test query"
+        with httpx.Client(
+            transport=httpx.MockTransport(respond), trust_env=False
+        ) as client:
+            monkeypatch.setattr(httpx, "post", client.post)
+            with caplog.at_level("INFO", logger="httpx"):
+                result = tool.execute(query=query)
+
+        assert result.success is True
+        assert len(requests) == 1
+        request = requests[0]
+        endpoint = f"https://example.test/firecrawl/v2/{mode}"
+        assert str(request.url) == endpoint
+        assert endpoint in caplog.text
+        scheme, encoded_auth = request.headers["Authorization"].split(" ", 1)
+        assert scheme == "Basic"
+        assert base64.b64decode(encoded_auth).decode() == f"{username}:{password}"
+        for secret in (
+            username,
+            password,
+            encoded_user,
+            encoded_password,
+            encoded_auth,
+        ):
+            assert secret not in caplog.text
+            assert secret not in result.content
+            assert secret not in str(result.metadata)
+
+    @pytest.fixture
+    def http_client(self, monkeypatch):
+        """Exercise real HTTPX/header validation with an in-memory connection."""
+        import httpcore
+        import httpx
+
+        transport = httpx.HTTPTransport()
+        transport._pool = httpcore.ConnectionPool(
+            network_backend=httpcore.MockBackend([])
+        )
+        with httpx.Client(transport=transport, trust_env=False) as client:
+            monkeypatch.setattr(httpx, "post", client.post)
+            yield client
+
+    @pytest.mark.parametrize("mode", ["search", "scrape"])
+    @pytest.mark.parametrize("failure", ["header", "url"])
+    def test_client_errors_never_expose_credentials(
+        self, monkeypatch, caplog, http_client, mode, failure
+    ):
+        secret = "fc-private-test-value"
+        tool = WebSearchTool(
+            engine="firecrawl",
+            # Interior newlines still fail after trimming pasted whitespace.
+            firecrawl_api_key=secret + "\ninvalid" if failure == "header" else secret,
+            firecrawl_api_url=(
+                f"https://example.test:{secret}" if failure == "url" else None
+            ),
+        )
+        monkeypatch.setattr(tool, "_duckduckgo_search", lambda *a: "Search fallback")
+        monkeypatch.setattr(tool, "_fetch_url", lambda *a: "Local fallback")
+        monkeypatch.setattr("openjarvis.tools.web_search.check_ssrf", lambda url: None)
+        query = "https://example.test/article" if mode == "scrape" else "test query"
+
+        with caplog.at_level("WARNING"):
+            result = tool.execute(query=query)
+
+        assert result.success is True
+        expected_error = "LocalProtocolError" if failure == "header" else "InvalidURL"
+        assert expected_error in caplog.text
+        assert secret not in caplog.text
+        assert secret not in result.content
+        assert secret not in str(result.metadata)
+        if mode == "search":
+            assert expected_error in result.metadata["fallback_reason"]
+            assert result.metadata["fallback_from"] == "firecrawl"
+        else:
+            assert result.metadata["extractor"] == "local"
+
+    def test_scrape_failure_does_not_log_private_target_url(self, caplog, http_client):
+        tool = WebSearchTool(engine="firecrawl", firecrawl_api_key="fc-key\ninvalid")
+        with caplog.at_level("WARNING"):
+            text = tool._firecrawl_extract("https://example.test/?token=private-token")
+        assert text is None
+        assert "LocalProtocolError" in caplog.text
+        assert "private-token" not in caplog.text
+        assert "fc-key" not in caplog.text
 
 
 class TestFallbackVisibility:

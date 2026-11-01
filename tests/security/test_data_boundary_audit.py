@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import os
 
 import pytest
@@ -12,11 +13,13 @@ from openjarvis.security.data_boundary_audit import (
     CHANNEL_REFERENCE_ENV_VARS,
     CHANNEL_SECRET_ENV_VARS,
     CLOUD_MEDIA_TOOLS,
+    CONNECTOR_NETWORK_TOOLS,
     EXTERNAL_TOOL_SURFACES,
     GENERIC_CREDENTIAL_ENV_VARS,
     GENERIC_NETWORK_TOOLS,
     KNOWLEDGE_ENGINE_TOOLS,
     LOCAL_ACCESS_TOOLS,
+    MARKET_DATA_TOOLS,
     OUTBOUND_TOOL_SURFACES,
     RUNTIME_CREDENTIAL_ENV_KEYS,
     WEATHER_TOOLS,
@@ -35,7 +38,9 @@ EXPECTED_BROWSER_TOOLS = {
 
 EXPECTED_GENERIC_NETWORK_TOOLS = {"http_request"}
 EXPECTED_WEATHER_TOOLS = {"get_weather"}
+EXPECTED_MARKET_DATA_TOOLS = {"fx_macro_data"}
 EXPECTED_CHANNEL_OUTBOUND_TOOLS = {"channel_send"}
+EXPECTED_CONNECTOR_NETWORK_TOOLS = {"digest_collect", "execute_pending_actions"}
 EXPECTED_CLOUD_MEDIA_TOOLS = {
     "audio_transcribe",
     "image_generate",
@@ -48,10 +53,15 @@ EXPECTED_LOCAL_ACCESS_TOOLS = {
     "apply_patch",
     "calendar_search",
     "calendar_upcoming",
+    "check_permission",
     "docker_shell_exec",
     "db_query",
+    "get_pending_actions",
+    "knowledge_search",
     "knowledge_sql",
     "memory_manage",
+    "queue_action",
+    "record_decision",
     "repl",
     "code_interpreter_docker",
     "git_status",
@@ -91,7 +101,9 @@ CLASSIFIED_TOOLS = (
     | BROWSER_TOOLS
     | GENERIC_NETWORK_TOOLS
     | WEATHER_TOOLS
+    | MARKET_DATA_TOOLS
     | CHANNEL_OUTBOUND_TOOLS
+    | CONNECTOR_NETWORK_TOOLS
     | CLOUD_MEDIA_TOOLS
     | KNOWLEDGE_ENGINE_TOOLS
     | LOCAL_ACCESS_TOOLS
@@ -335,6 +347,23 @@ def test_web_search_tool_and_tavily_env_are_correlated(
     assert findings["web-search-tool-configured"].status == "warn"
     assert findings["env-credential-tavily_api_key"].status == "warn"
     assert "secret-value" not in str(report.to_dict(show_paths=True))
+
+
+def test_firecrawl_web_search_data_path_includes_url_lookups(tmp_path, monkeypatch):
+    """With Firecrawl, URL queries are scraped by the service rather than
+    fetched locally, so the finding has to say URLs leave the machine too."""
+    config = _low_noise_config()
+    config.tools.enabled = "web_search"
+    for key in ("TAVILY_API_KEY", "YOUDOTCOM_API_KEY", "SERPLY_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("OPENJARVIS_WEB_SEARCH_ENGINE", raising=False)
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+
+    report = build_data_boundary_report(config, tmp_path)
+
+    findings = {finding.id: finding for finding in report.findings}
+    path = findings["web-search-tool-configured"].potential_data_path
+    assert path == "user or agent search query and URL lookups -> Firecrawl search API"
 
 
 def test_mcp_servers_are_flagged_when_non_empty(tmp_path):
@@ -727,17 +756,43 @@ def test_required_registered_tool_names_are_classified():
     assert EXPECTED_GENERIC_NETWORK_TOOLS <= GENERIC_NETWORK_TOOLS
     assert EXPECTED_WEATHER_TOOLS <= WEATHER_TOOLS
     assert EXPECTED_CHANNEL_OUTBOUND_TOOLS <= CHANNEL_OUTBOUND_TOOLS
+    assert EXPECTED_CONNECTOR_NETWORK_TOOLS <= CONNECTOR_NETWORK_TOOLS
     assert EXPECTED_CLOUD_MEDIA_TOOLS <= CLOUD_MEDIA_TOOLS
     assert EXPECTED_KNOWLEDGE_ENGINE_TOOLS <= KNOWLEDGE_ENGINE_TOOLS
     assert (
         EXPECTED_GENERIC_NETWORK_TOOLS
         | EXPECTED_WEATHER_TOOLS
         | EXPECTED_CHANNEL_OUTBOUND_TOOLS
+        | EXPECTED_CONNECTOR_NETWORK_TOOLS
         | EXPECTED_CLOUD_MEDIA_TOOLS
         | EXPECTED_BROWSER_TOOLS
         | EXPECTED_KNOWLEDGE_ENGINE_TOOLS
     ) <= OUTBOUND_TOOL_SURFACES
     assert EXPECTED_KNOWLEDGE_ENGINE_TOOLS <= EXTERNAL_TOOL_SURFACES
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "destination"),
+    [
+        ("digest_collect", "configured connector services"),
+        ("execute_pending_actions", "Gmail, Google Calendar, or iMessage"),
+    ],
+)
+def test_registered_connector_tools_warn_without_channel_or_digest_automation(
+    tmp_path, tool_name, destination
+):
+    config = _low_noise_config()
+    config.tools.enabled = tool_name
+    assert not config.digest.enabled
+    assert not config.channel.enabled
+
+    report = build_data_boundary_report(config, tmp_path)
+    findings = {finding.id: finding for finding in report.findings}
+    finding = findings["connector-network-tools-configured"]
+    assert finding.status == "warn"
+    assert tool_name in finding.evidence
+    assert destination in finding.potential_data_path
+    assert "local-access-tools-configured" not in findings
 
 
 @pytest.mark.parametrize("tool_name", sorted(EXPECTED_WEATHER_TOOLS))
@@ -754,6 +809,36 @@ def test_weather_tool_produces_outbound_warn(tmp_path, tool_name):
     assert tool_name in finding.evidence
     assert "location query" in finding.potential_data_path
     assert "OPENWEATHERMAP_API_KEY" not in str(payload)
+
+
+def test_market_data_tool_produces_outbound_warn(tmp_path):
+    assert EXPECTED_MARKET_DATA_TOOLS <= MARKET_DATA_TOOLS <= OUTBOUND_TOOL_SURFACES
+    config = _low_noise_config()
+    config.tools.enabled = "fx_macro_data"
+
+    report = build_data_boundary_report(config, tmp_path)
+    findings = {finding.id: finding for finding in report.findings}
+
+    finding = findings["market-data-tool-configured"]
+    assert finding.status == "warn"
+    assert "fx_macro_data" in finding.evidence
+    assert "FXMacroData" in finding.potential_data_path
+
+
+def test_fxmacrodata_api_key_presence_is_reported_without_value(tmp_path, monkeypatch):
+    config = _low_noise_config()
+    config.tools.enabled = "fx_macro_data"
+    secret = "fxmacrodata-key-that-must-not-leak"
+    monkeypatch.setenv("FXMACRODATA_API_KEY", secret)
+
+    report = build_data_boundary_report(config, tmp_path)
+    payload = report.to_dict(show_paths=True)
+    findings = {finding.id: finding for finding in report.findings}
+
+    finding = findings["env-credential-fxmacrodata_api_key"]
+    assert finding.status == "warn"
+    assert "FXMACRODATA_API_KEY is set" in finding.evidence
+    assert secret not in str(payload)
 
 
 def test_openweathermap_api_key_presence_is_reported_without_value(
@@ -1354,6 +1439,8 @@ class TestWebSearchDestination:
             "YOUDOTCOM_API_KEY",
             "SERPLY_API_KEY",
             "SERPLY_PROXY_LOCATION",
+            "FIRECRAWL_API_KEY",
+            "FIRECRAWL_API_URL",
             "OPENJARVIS_WEB_SEARCH_ENGINE",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -1403,6 +1490,43 @@ class TestWebSearchDestination:
         monkeypatch.setenv("SERPLY_PROXY_LOCATION", "DE")
         assert "region DE" in _web_search_destination()
 
+    def test_firecrawl_is_named(self, monkeypatch):
+        from openjarvis.security.data_boundary_audit import _web_search_destination
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        assert _web_search_destination() == "Firecrawl search API"
+
+    def test_blank_firecrawl_configuration_matches_runtime(self, monkeypatch):
+        from openjarvis.security.data_boundary_audit import _web_search_destination
+        from openjarvis.tools.web_search import WebSearchTool
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", " \n")
+        monkeypatch.setenv("FIRECRAWL_API_URL", " \n")
+        assert WebSearchTool()._resolve_engine() == "youcom"
+        assert _web_search_destination() == "You.com web search API (keyless free tier)"
+
+    def test_firecrawl_self_hosted_names_only_the_host(self, monkeypatch):
+        """A self-hosted instance keeps queries off the hosted API, so the
+        audit says so, without echoing a URL that may carry credentials."""
+        from openjarvis.security.data_boundary_audit import _web_search_destination
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+        monkeypatch.setenv("FIRECRAWL_API_URL", "https://user:pw@fc.internal:3002/")
+        destination = _web_search_destination()
+        assert destination.startswith("Firecrawl search API (self-hosted at ")
+        assert "fc.internal;" in destination
+        assert "pw" not in destination
+
+    def test_keyless_self_hosted_firecrawl_is_named(self, monkeypatch):
+        from openjarvis.security.data_boundary_audit import _web_search_destination
+
+        self._clear(monkeypatch)
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        assert "self-hosted at localhost" in _web_search_destination()
+
     def test_matches_the_tool_resolution(self, monkeypatch):
         """Guard against the audit's copy of the precedence rule drifting from
         WebSearchTool._resolve_engine, which is the source of truth."""
@@ -1414,23 +1538,34 @@ class TestWebSearchDestination:
             "tavily": "Tavily",
             "duckduckgo": "DuckDuckGo",
             "serply": "Serply",
+            "firecrawl": "Firecrawl",
         }
-        engines = (None, "auto", "youcom", "tavily", "duckduckgo", "serply")
-        for tavily in (None, "tvly-key"):
-            for youcom in (None, "ydc-key"):
-                for serply in (None, "srp-key"):
-                    for engine in engines:
-                        self._clear(monkeypatch)
-                        if tavily:
-                            monkeypatch.setenv("TAVILY_API_KEY", tavily)
-                        if youcom:
-                            monkeypatch.setenv("YOUDOTCOM_API_KEY", youcom)
-                        if serply:
-                            monkeypatch.setenv("SERPLY_API_KEY", serply)
-                        if engine:
-                            monkeypatch.setenv("OPENJARVIS_WEB_SEARCH_ENGINE", engine)
-                        resolved = WebSearchTool()._resolve_engine()
-                        assert labels[resolved] in _web_search_destination(), (
-                            f"tavily={tavily} youcom={youcom} serply={serply} "
-                            f"engine={engine}"
-                        )
+        engines = (
+            None,
+            "auto",
+            "youcom",
+            "tavily",
+            "duckduckgo",
+            "serply",
+            "firecrawl",
+        )
+        keys = (
+            ("TAVILY_API_KEY", "tvly-key"),
+            ("YOUDOTCOM_API_KEY", "ydc-key"),
+            ("SERPLY_API_KEY", "srp-key"),
+            ("FIRECRAWL_API_KEY", "fc-test"),
+            ("FIRECRAWL_API_URL", "http://localhost:3002"),
+        )
+        for present in itertools.product((False, True), repeat=len(keys)):
+            for engine in engines:
+                self._clear(monkeypatch)
+                for (name, value), is_set in zip(keys, present):
+                    if is_set:
+                        monkeypatch.setenv(name, value)
+                if engine:
+                    monkeypatch.setenv("OPENJARVIS_WEB_SEARCH_ENGINE", engine)
+                resolved = WebSearchTool()._resolve_engine()
+                set_vars = [name for (name, _), is_set in zip(keys, present) if is_set]
+                assert labels[resolved] in _web_search_destination(), (
+                    f"set={set_vars} engine={engine}"
+                )

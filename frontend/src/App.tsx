@@ -17,6 +17,7 @@ import { OptInModal } from './components/OptInModal';
 import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
 import { useBorsaAlarms } from './lib/useBorsaAlarms';
+import { offerAnalyticsChoice } from './lib/analytics-invitation';
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(!isTauri());
@@ -116,15 +117,15 @@ export default function App() {
     refresh();
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
-  }, [optInEnabled, optInDisplayName, optInAnonId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [optInEnabled, optInDisplayName, optInEmail, optInAnonId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show opt-in modal on first visit
-  useEffect(() => {
-    if (!optInModalSeen) {
-      setOptInModalOpen(true);
-      markOptInModalSeen();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Wait for desktop setup before fetching identity or marking the dialog seen.
+  useEffect(() => offerAnalyticsChoice({
+    ready: setupDone,
+    sharingModalSeen: optInModalSeen,
+    open: () => setOptInModalOpen(true),
+    markSharingModalSeen: markOptInModalSeen,
+  }), [setupDone, optInModalSeen, setOptInModalOpen, markOptInModalSeen]);
 
   // Fire model_changed when the user switches models. First mount is
   // not a "change" — only emit when both prev and current are real and

@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal
+from urllib.parse import urlparse
 
 from openjarvis.core.credentials import TOOL_CREDENTIALS
 
@@ -58,6 +59,14 @@ API_KEY_ENV_VARS = {
         {"cartesia", "text_to_speech"},
     ),
     "DEEPSEEK_API_KEY": ("DeepSeek cloud inference", {"deepseek"}),
+    "ELEVENLABS_API_KEY": (
+        "ElevenLabs cloud text-to-speech",
+        {"elevenlabs", "text_to_speech"},
+    ),
+    "FXMACRODATA_API_KEY": (
+        "FXMacroData macro and FX data lookup",
+        {"fx_macro_data", "fxmacrodata"},
+    ),
     "GEMINI_API_KEY": ("Google/Gemini cloud inference", {"google", "gemini"}),
     "GOOGLE_API_KEY": ("Google/Gemini cloud inference", {"google", "gemini"}),
     "MINIMAX_API_KEY": ("MiniMax cloud inference", {"minimax"}),
@@ -70,6 +79,7 @@ API_KEY_ENV_VARS = {
     "TAVILY_API_KEY": ("Tavily web search", {"tavily", "web_search"}),
     "YOUDOTCOM_API_KEY": ("You.com web search", {"youcom", "web_search"}),
     "SERPLY_API_KEY": ("Serply web search", {"serply", "web_search"}),
+    "FIRECRAWL_API_KEY": ("Firecrawl web search", {"firecrawl", "web_search"}),
 }
 
 CHANNEL_SECRET_FIELDS: tuple[tuple[str, str, str], ...] = (
@@ -217,9 +227,11 @@ BROWSER_TOOLS = {
 }
 GENERIC_NETWORK_TOOLS = {"http_request"}
 WEATHER_TOOLS = {"get_weather"}
+MARKET_DATA_TOOLS = {"fx_macro_data"}
 CHANNEL_OUTBOUND_TOOLS = {"channel_send"}
+CONNECTOR_NETWORK_TOOLS = {"digest_collect", "execute_pending_actions"}
 CLOUD_MEDIA_TOOLS = {"audio_transcribe", "image_generate", "text_to_speech"}
-CLOUD_TTS_BACKENDS = {"cartesia", "openai", "openai_tts"}
+CLOUD_TTS_BACKENDS = {"cartesia", "elevenlabs", "openai", "openai_tts"}
 # Local knowledge chunks scanned by an inference engine (Deep Research path).
 KNOWLEDGE_ENGINE_TOOLS = {"scan_chunks"}
 # External egress surfaces (web, browser, HTTP, channels, media, knowledge LM).
@@ -228,12 +240,16 @@ EXTERNAL_TOOL_SURFACES = (
     | BROWSER_TOOLS
     | GENERIC_NETWORK_TOOLS
     | WEATHER_TOOLS
+    | MARKET_DATA_TOOLS
     | CHANNEL_OUTBOUND_TOOLS
+    | CONNECTOR_NETWORK_TOOLS
     | CLOUD_MEDIA_TOOLS
     | KNOWLEDGE_ENGINE_TOOLS
 )
 # Narrower cloud inference / media API key surfaces (not browser-only egress).
-CLOUD_API_SURFACES = CLOUD_MEDIA_TOOLS | WEB_SEARCH_TOOLS | WEATHER_TOOLS
+CLOUD_API_SURFACES = (
+    CLOUD_MEDIA_TOOLS | WEB_SEARCH_TOOLS | WEATHER_TOOLS | MARKET_DATA_TOOLS
+)
 OUTBOUND_TOOL_SURFACES = EXTERNAL_TOOL_SURFACES
 LOCAL_ACCESS_TOOLS = {
     "apply_patch",
@@ -241,12 +257,14 @@ LOCAL_ACCESS_TOOLS = {
     "calendar_upcoming",
     "channel_list",
     "channel_status",
+    "check_permission",
     "code_interpreter",
     "code_interpreter_docker",
     "db_query",
     "docker_shell_exec",
     "file_read",
     "file_write",
+    "get_pending_actions",
     "git_commit",
     "git_diff",
     "git_log",
@@ -255,6 +273,7 @@ LOCAL_ACCESS_TOOLS = {
     "kg_add_relation",
     "kg_neighbors",
     "kg_query",
+    "knowledge_search",
     "knowledge_sql",
     "memory_index",
     "memory_manage",
@@ -262,6 +281,8 @@ LOCAL_ACCESS_TOOLS = {
     "memory_search",
     "memory_store",
     "pdf_extract",
+    "queue_action",
+    "record_decision",
     "repl",
     "retrieval",
     "shell_exec",
@@ -953,11 +974,15 @@ def _audit_tool_surfaces(config: Any, builder: _FindingBuilder) -> None:
 
     if tools & WEB_SEARCH_TOOLS:
         destination = _web_search_destination()
+        data = "user or agent search query"
+        if destination.startswith("Firecrawl"):
+            # URL queries are scraped by Firecrawl too, not fetched locally.
+            data += " and URL lookups"
         builder.add(
             finding_id="web-search-tool-configured",
             status="warn",
             title="Web search tool is configured",
-            potential_data_path=(f"user or agent search query -> {destination}"),
+            potential_data_path=(f"{data} -> {destination}"),
             evidence=(
                 f"configured tool(s) = {_format_tools(tools & WEB_SEARCH_TOOLS)}"
             ),
@@ -1008,6 +1033,23 @@ def _audit_tool_surfaces(config: Any, builder: _FindingBuilder) -> None:
             ),
         )
 
+    if tools & MARKET_DATA_TOOLS:
+        builder.add(
+            finding_id="market-data-tool-configured",
+            status="warn",
+            title="External market data lookup tool is configured",
+            potential_data_path=(
+                "currency, indicator and date arguments -> FXMacroData API"
+            ),
+            evidence=(
+                f"configured tool(s) = {_format_tools(tools & MARKET_DATA_TOOLS)}"
+            ),
+            recommendation=(
+                "Only currency codes, indicator names and dates leave the machine; "
+                "keep the tool disabled if no external lookup is wanted."
+            ),
+        )
+
     if tools & CHANNEL_OUTBOUND_TOOLS:
         builder.add(
             finding_id="channel-outbound-tool-configured",
@@ -1020,6 +1062,28 @@ def _audit_tool_surfaces(config: Any, builder: _FindingBuilder) -> None:
             recommendation=(
                 "Review channel targets and message content before enabling outbound "
                 "messaging tools."
+            ),
+        )
+
+    connector_tools = tools & CONNECTOR_NETWORK_TOOLS
+    if connector_tools:
+        paths = []
+        if "digest_collect" in connector_tools:
+            paths.append("authenticated sync requests -> configured connector services")
+        if "execute_pending_actions" in connector_tools:
+            paths.append(
+                "queued action payloads -> Gmail, Google Calendar, or iMessage"
+            )
+        builder.add(
+            finding_id="connector-network-tools-configured",
+            status="warn",
+            title="Tools that contact connector services are configured",
+            potential_data_path="; ".join(paths),
+            evidence=f"configured tool(s) = {_format_tools(connector_tools)}",
+            recommendation=(
+                "Review connector destinations and queued action approvals; these "
+                "tools can contact external services even when digest and channel "
+                "automation are disabled."
             ),
         )
 
@@ -1077,6 +1141,14 @@ def _audit_tool_surfaces(config: Any, builder: _FindingBuilder) -> None:
         )
 
 
+def _firecrawl_self_hosted_url() -> str | None:
+    """Return ``FIRECRAWL_API_URL`` when it points away from the hosted API."""
+    api_url = (os.environ.get("FIRECRAWL_API_URL") or "").strip().rstrip("/")
+    if api_url and api_url != "https://api.firecrawl.dev":
+        return api_url
+    return None
+
+
 def _web_search_destination() -> str:
     """Name the service ``web_search`` sends queries to, from env keys alone.
 
@@ -1086,7 +1158,7 @@ def _web_search_destination() -> str:
     source of truth; ``test_data_boundary_audit`` asserts the two agree.
     """
     engine = (os.environ.get("OPENJARVIS_WEB_SEARCH_ENGINE") or "auto").strip().lower()
-    if engine not in {"auto", "youcom", "tavily", "duckduckgo", "serply"}:
+    if engine not in {"auto", "youcom", "tavily", "duckduckgo", "serply", "firecrawl"}:
         engine = "auto"
     if engine == "auto":
         if os.environ.get("TAVILY_API_KEY"):
@@ -1095,6 +1167,10 @@ def _web_search_destination() -> str:
             engine = "youcom"
         elif os.environ.get("SERPLY_API_KEY"):
             engine = "serply"
+        elif (os.environ.get("FIRECRAWL_API_KEY") or "").strip() or (
+            _firecrawl_self_hosted_url()
+        ):
+            engine = "firecrawl"
         else:
             engine = "youcom"
 
@@ -1107,6 +1183,16 @@ def _web_search_destination() -> str:
         if location:
             return f"Serply web search API (Google SERP, region {location})"
         return "Serply web search API (Google SERP)"
+    if engine == "firecrawl":
+        api_url = _firecrawl_self_hosted_url()
+        if api_url:
+            # Name the host only: a self-hosted URL can carry credentials.
+            host = urlparse(api_url).hostname or "custom URL"
+            return (
+                f"Firecrawl search API (self-hosted at {host}; search queries go "
+                "on to its configured search backend)"
+            )
+        return "Firecrawl search API"
     tier = "keyed" if os.environ.get("YOUDOTCOM_API_KEY") else "keyless free tier"
     return f"You.com web search API ({tier})"
 

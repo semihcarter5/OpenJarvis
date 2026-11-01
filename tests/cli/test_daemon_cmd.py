@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from openjarvis.cli import cli
@@ -128,12 +129,44 @@ class TestPidLiveness:
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
         try:
             pid_file = tmp_path / "server.pid"
-            pid_file.write_text(str(proc.pid))
-
-            with patch("openjarvis.cli.daemon_cmd._PID_FILE", pid_file):
+            with (
+                patch("openjarvis.cli.daemon_cmd._PID_FILE", pid_file),
+                patch(
+                    "openjarvis.cli.daemon_cmd._STATE_FILE", tmp_path / "server.json"
+                ),
+            ):
+                _write_pid(proc.pid)
                 assert _read_pid() == proc.pid
 
             assert pid_file.exists()
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux procfs start times")
+    def test_pid_reused_after_registration_does_not_block_or_get_signaled(
+        self, tmp_path
+    ):
+        from openjarvis.cli import daemon_cmd
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        pid_file = tmp_path / "server.pid"
+        state_file = tmp_path / "server.json"
+        try:
+            pid_file.write_text(str(proc.pid))
+            os.utime(pid_file, (time.time() - 120, time.time() - 120))
+            with (
+                patch.object(daemon_cmd, "_PID_FILE", pid_file),
+                patch.object(daemon_cmd, "_STATE_FILE", state_file),
+            ):
+                assert daemon_cmd._read_pid() is None
+                assert not pid_file.exists()
+                assert proc.poll() is None
+                pid_file.write_text(str(proc.pid))
+                os.utime(pid_file, (time.time() - 120, time.time() - 120))
+                daemon_cmd._write_pid(os.getpid(), "127.0.0.1", 8000)
+                assert daemon_cmd._read_pid() == os.getpid()
+                assert proc.poll() is None
         finally:
             proc.terminate()
             proc.wait()
@@ -190,7 +223,7 @@ class TestDaemonDetachment:
             patch("openjarvis.cli.daemon_cmd._LOG_FILE", tmp_path / "server.log"),
             patch("openjarvis.cli.daemon_cmd.sys.platform", "win32"),
             patch("openjarvis.cli.daemon_cmd._write_pid_unlocked") as write_pid,
-            patch.object(subprocess, "DETACHED_PROCESS", 0x00000008, create=True),
+            patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
             patch.object(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True
             ),
@@ -256,14 +289,15 @@ class TestDaemonDetachment:
         # Supply their documented values so the simulated Windows branch is
         # still exercised by the POSIX test job.
         detached_process = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         create_new_process_group = getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
         )
         with (
             patch.object(
                 subprocess,
-                "DETACHED_PROCESS",
-                detached_process,
+                "CREATE_NO_WINDOW",
+                create_no_window,
                 create=True,
             ),
             patch.object(
@@ -276,9 +310,13 @@ class TestDaemonDetachment:
             kwargs = self._spawn_kwargs("win32")
 
         flags = kwargs.get("creationflags", 0)
-        assert flags & detached_process, (
-            "server must be spawned with DETACHED_PROCESS on Windows, otherwise "
-            "closing the launching console kills it"
+        assert flags & create_no_window, (
+            "server must be spawned with CREATE_NO_WINDOW on Windows: it gets its "
+            "own hidden console, so closing the launching console does not kill it"
+        )
+        assert not flags & detached_process, (
+            "DETACHED_PROCESS must not be used: with a venv launcher stub the real "
+            "interpreter would allocate a new, visible console window"
         )
         assert flags & create_new_process_group, (
             "server must be in its own process group so Ctrl-C in the parent "

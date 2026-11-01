@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 import click
@@ -32,11 +34,162 @@ def _pid_alive(pid: int) -> bool:
     return process_alive(pid)
 
 
+def _linux_process_identity(pid: int) -> dict | None:
+    """Read a process identity unaffected by wall-clock adjustments.
+
+    Linux's boot epoch changes when the clock is set; boot_id and start ticks
+    do not. Both are needed because PIDs and start ticks can repeat after boot.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        # The comm field may contain spaces and parentheses; fields after its
+        # final ')' begin with field 3. Field 22 is start time in clock ticks.
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        start_ticks = int(stat.rsplit(")", 1)[1].split()[19])
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if start_ticks < 0 or not boot_id:
+            return None
+        return {"pid": pid, "boot_id": boot_id, "start_ticks": start_ticks}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_pid_identity() -> dict:
+    """Read the optional Linux identity sidecar, preserving legacy PID files."""
+    try:
+        identity = json.loads(_PID_FILE.with_suffix(".identity.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    if (
+        not isinstance(identity, dict)
+        or type(identity.get("pid")) is not int
+        or identity["pid"] <= 0
+        or type(identity.get("start_ticks")) is not int
+        or identity["start_ticks"] < 0
+        or not isinstance(identity.get("boot_id"), str)
+        or not identity["boot_id"]
+    ):
+        return {}
+    return identity
+
+
+def _legacy_cli_args(argv: list[str]) -> list[str] | None:
+    """Find CLI arguments without treating script arguments as Python options."""
+    entry_points = {"jarvis", "jarvis.exe"}
+    if not argv:
+        return None
+    executable = Path(argv[0]).name
+    if executable in entry_points:
+        return argv[1:]
+    if not re.fullmatch(
+        r"(?:python|pypy)(?:\d+(?:\.\d+)*)?[tdm]?(?:\.exe)?", executable
+    ):
+        return None
+
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            index += 1
+            break
+        if not arg.startswith("-") or arg == "-":
+            break
+        if arg == "--check-hash-based-pycs":
+            index += 2  # Its value is not a module or script argument.
+            continue
+        if arg.startswith("--check-hash-based-pycs="):
+            index += 1
+            continue
+        # Python accepts combined flags (-uO) and attached values (-Wignore,
+        # -Xdev, -mopenjarvis.cli). Value-taking flags consume the remainder.
+        options = arg[1:]
+        while options:
+            option, options = options[0], options[1:]
+            if option == "c":
+                return None
+            if option in "mWX":
+                if not options:
+                    index += 1
+                    if index >= len(argv):
+                        return None
+                    options = argv[index]
+                if option == "m":
+                    return argv[index + 1 :] if options == "openjarvis.cli" else None
+                break
+            if option not in "bBdEiIOPqRsSuvx":
+                return None
+        index += 1
+    # The first positional argument is the script. Never look beyond it for
+    # -m: those tokens belong to that script, not the Python interpreter.
+    if index < len(argv) and Path(argv[index]).name in entry_points:
+        return argv[index + 1 :]
+    return None
+
+
+def _legacy_linux_daemon(pid: int) -> bool | None:
+    """Recognize an old registration before it has a saved process identity."""
+    try:
+        arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    if arguments and arguments[-1] == b"":
+        arguments.pop()
+    # Empty option values still occupy an argument; dropping them shifts the
+    # execution boundary and can make a script's own -m look like Python's.
+    argv = [os.fsdecode(arg) for arg in arguments]
+    command = _legacy_cli_args(argv)
+    if command is None:
+        return False
+    # These are the CLI's global boolean options. Help/version and unknown
+    # options do not launch a server, even when followed by the word serve.
+    while command and command[0] in {"--verbose", "--quiet", "--pick-model"}:
+        command = command[1:]
+    if command and command[0] == "--":
+        command = command[1:]
+    return bool(command) and command[0] == "serve"
+
+
+def _registered_pid_alive(pid: int) -> bool:
+    """Reject reused Linux PIDs without comparing mutable wall-clock times."""
+    if not _pid_alive(pid):
+        return False
+    if sys.platform != "linux":
+        return True
+    current = _linux_process_identity(pid)
+    if current is None:
+        # Restricted or unmounted procfs must not orphan a live daemon.
+        return True
+    recorded = _read_pid_identity()
+    if recorded.get("pid") == pid:
+        return current == recorded
+    # A legacy file has no historical identity to compare. Do not adopt an
+    # arbitrary live process just because its PID was recycled. Once verified,
+    # migrate the registration while the caller holds the state lock.
+    is_daemon = _legacy_linux_daemon(pid)
+    if is_daemon is False:
+        return False
+    if is_daemon:
+        # Do not pair an old start tick with a replacement process's command.
+        confirmed = _linux_process_identity(pid)
+        if confirmed is not None and confirmed != current:
+            return False
+        if confirmed is not None:
+            try:
+                secure_write_json(_PID_FILE.with_suffix(".identity.json"), confirmed)
+            except OSError:
+                # Migration is optional. A read-only/full filesystem must not
+                # make a verified live daemon inaccessible to status or stop.
+                pass
+    return True
+
+
 @contextmanager
-def _state_lock() -> Iterator[None]:
+def _state_lock(state_file: Path | None = None) -> Iterator[None]:
     """Serialize daemon bookkeeping across launching and supervised processes."""
-    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with _PID_FILE.with_suffix(".lock").open("a+b") as lock:
+    path = _PID_FILE if state_file is None else state_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".lock").open("a+b") as lock:
         if os.name == "nt":
             import msvcrt
 
@@ -74,6 +227,8 @@ def _clear_state_unlocked(pid: int) -> None:
         _PID_FILE.unlink(missing_ok=True)
     if _read_state().get("pid") == pid:
         _STATE_FILE.unlink(missing_ok=True)
+    if _read_pid_identity().get("pid") == pid:
+        _PID_FILE.with_suffix(".identity.json").unlink(missing_ok=True)
 
 
 def _read_pid_unlocked() -> int | None:
@@ -82,7 +237,7 @@ def _read_pid_unlocked() -> int | None:
     if pid is None:
         _PID_FILE.unlink(missing_ok=True)
         return None
-    if not _pid_alive(pid):
+    if not _registered_pid_alive(pid):
         _clear_state_unlocked(pid)
         return None
     return pid
@@ -131,9 +286,14 @@ def _write_pid_unlocked(
         # The server may have bound before its launcher recorded pending state.
         # Keep the actual PID and bound address in either ordering.
         return
-    if existing is not None and existing != pid and _pid_alive(existing):
+    if existing is not None and existing != pid and _registered_pid_alive(existing):
         if not (ready and same_launch and current.get("ready") is False):
             raise RuntimeError(f"Another server is already registered (PID {existing})")
+    identity = _linux_process_identity(pid)
+    if identity is not None:
+        secure_write_json(_PID_FILE.with_suffix(".identity.json"), identity)
+    else:
+        _PID_FILE.with_suffix(".identity.json").unlink(missing_ok=True)
     secure_write_text(_PID_FILE, str(pid))
     if host or port is not None:
         state = {"pid": pid, "host": host, "port": port}
@@ -255,13 +415,18 @@ def start(
     # names the parameter ``unused_start_new_session`` and ignores it. Relying
     # on it there leaves the server sharing its parent's console, so closing
     # that console — or logging off — delivers CTRL_CLOSE_EVENT and kills the
-    # daemon. DETACHED_PROCESS gives it no console at all; the new process
-    # group additionally stops a Ctrl-C in the parent reaching it.
+    # daemon. CREATE_NO_WINDOW gives it its own hidden console, which its
+    # children inherit. DETACHED_PROCESS (no console at all) is not enough for a
+    # venv install: ``jarvis.exe``/``python.exe`` there are launcher stubs that
+    # spawn the real interpreter, and that child, finding no console to inherit,
+    # allocates a NEW visible one (a terminal window) that kills the server when
+    # closed. The new process group additionally stops a Ctrl-C in the parent
+    # reaching it.
     DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     spawn_kwargs: dict = {}
     if sys.platform == "win32":
         spawn_kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         )
     else:
         spawn_kwargs["start_new_session"] = True
@@ -313,10 +478,22 @@ def start(
 def stop() -> None:
     """Stop the running OpenJarvis server daemon."""
     console = Console(stderr=True)
+    # Stop the graphical frontend too. It is a sibling process, not a child of
+    # the daemon, so it otherwise outlives `stop` and keeps holding its port —
+    # leaving both a GUI that serves pages but fails every request, and a next
+    # `jarvis gui` that dies on "Frontend port 5173 is unavailable".
+    # Imported here rather than at module scope: gui_cmd is a sibling CLI
+    # module and only `stop` needs it.
+    from openjarvis.cli.gui_cmd import stop_frontend
+
+    frontend_pid = stop_frontend()
+    if frontend_pid is not None:
+        console.print(f"[green]Frontend stopped[/green] (PID {frontend_pid}).")
+
     pid = _read_pid()
     if pid is None:
         console.print("[yellow]No running server found.[/yellow]")
-        sys.exit(1)
+        sys.exit(0 if frontend_pid is not None else 1)
 
     # Graceful shutdown (SIGTERM / taskkill), escalating to a forced kill after
     # 10s if still running. Cross-platform — no POSIX-only os.kill/SIGKILL.
