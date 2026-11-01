@@ -65,10 +65,8 @@ function renderEvents(events) {
   els.eventsEmpty.hidden = recent.length > 0;
   for (const ev of recent) {
     const li = document.createElement("li");
-    const when = new Date(ev.timestamp ?? ev.ts ?? Date.now()).toLocaleString(
-      "tr-TR"
-    );
-    li.textContent = `${ev.symbol} — ${ev.message ?? ev.rule ?? ""} (${when})`;
+    const when = new Date(ev.at).toLocaleString("tr-TR");
+    li.textContent = `${ev.symbol} — ${ev.message} (${when})`;
     els.events.appendChild(li);
   }
 }
