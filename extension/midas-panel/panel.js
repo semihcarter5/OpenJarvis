@@ -275,14 +275,24 @@ async function runHindsight() {
 
 async function addTakip() {
   const symbol = els.takipInput.value.trim();
-  if (!symbol) return;
+  if (!symbol) {
+    window.alert("Önce bir sembol yaz (örn. ASELS).");
+    els.takipInput.focus();
+    return;
+  }
+  const original = els.takipBtn.textContent;
+  els.takipBtn.disabled = true;
+  els.takipBtn.textContent = "Ekleniyor…";
   const base = await getApiBase();
   try {
     await postJson(base, "/api/borsa/takip/ekle", { sembol: symbol });
     els.takipInput.value = "";
-    refresh();
+    await refresh();
   } catch (err) {
     window.alert(`Eklenemedi: ${err.message}`);
+  } finally {
+    els.takipBtn.disabled = false;
+    els.takipBtn.textContent = original;
   }
 }
 
