@@ -140,6 +140,107 @@ button.sell {
   margin-top: 8px;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+button.pause {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+button.pause.paused {
+  color: var(--down);
+  border-color: var(--down);
+}
+
+.add-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.add-row input {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.scan-controls {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.scan-controls select {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+#scan-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#scan-results li {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.signal-detail {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.signal-detail .horizon {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.signal-detail .verdict-buy {
+  color: var(--up);
+  font-weight: 600;
+}
+
+.signal-detail .verdict-sell {
+  color: var(--down);
+  font-weight: 600;
+}
+
+.signal-detail .verdict-neutral {
+  color: var(--muted);
+}
+
+.signal-detail .news-item {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.signal-detail .news-date {
+  color: var(--muted);
+}
+
+button.signal {
+  margin-left: 4px;
+}
+
 footer {
   margin-top: 16px;
   display: flex;

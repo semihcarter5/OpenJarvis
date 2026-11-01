@@ -36,13 +36,19 @@ class _ResetRequest(BaseModel):
     bakiye: float = Field(default=100_000.0, gt=0)
 
 
-def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
+class _SymbolRequest(BaseModel):
+    sembol: str = Field(min_length=1, max_length=20)
+
+
+def create_borsa_router(store=None, watchlist=None) -> APIRouter:  # noqa: ANN001
     """Quote/analysis/alarm/paper-portfolio endpoints for the Midas side panel."""
-    from openjarvis.borsa import analysis, data, portfolio
+    from openjarvis.borsa import analysis, data, portfolio, signals
     from openjarvis.borsa.alarms import AlarmStore
+    from openjarvis.borsa.watchlist import WatchlistStore
 
     router = APIRouter(prefix="/api/borsa", tags=["borsa"])
     store = store or AlarmStore()
+    watchlist = watchlist or WatchlistStore()
     paper = portfolio.PaperPortfolio()
 
     @router.get("/fiyat")
@@ -67,17 +73,22 @@ def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
 
     @router.get("/izleme")
     async def izleme():
-        """Watchlist: one quote per distinct symbol across saved alarms."""
-        symbols = sorted({a.symbol for a in store.load()})
+        """Watchlist: one quote per distinct symbol (alarms + manual takip)."""
+        alarm_symbols = {a.symbol for a in store.load()}
+        takip_symbols = set(watchlist.list())
+        symbols = sorted(alarm_symbols | takip_symbols)
         items = []
         for symbol in symbols:
+            kaynak = "alarm+takip" if symbol in takip_symbols and symbol in alarm_symbols \
+                else "takip" if symbol in takip_symbols else "alarm"
             try:
                 asset = data.resolve(symbol)
                 items.append(
-                    {"symbol": asset.display, "kind": asset.kind, **data.quote(asset)}
+                    {"symbol": asset.display, "kind": asset.kind, "kaynak": kaynak,
+                     **data.quote(asset)}
                 )
             except data.BorsaError as exc:
-                items.append({"symbol": symbol, "error": str(exc)})
+                items.append({"symbol": symbol, "kaynak": kaynak, "error": str(exc)})
         return {"items": items}
 
     @router.get("/turnuva")
@@ -125,6 +136,49 @@ def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
         except data.BorsaError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return paper.summary()
+
+    @router.get("/takip")
+    async def takip_liste():
+        """Manually tracked symbols (independent of alarm thresholds)."""
+        return {"symbols": watchlist.list()}
+
+    @router.post("/takip/ekle")
+    async def takip_ekle(body: _SymbolRequest):
+        try:
+            symbol = watchlist.add(body.sembol)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"symbol": symbol}
+
+    @router.post("/takip/sil")
+    async def takip_sil(body: _SymbolRequest):
+        try:
+            removed = watchlist.remove(body.sembol)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"{body.sembol} takipte değil.")
+        return {"ok": True}
+
+    @router.get("/sinyal")
+    async def sinyal(sembol: str = _SYMBOL_QUERY):
+        """Short/medium/long-term buy-sell-hold verdict, analyst view, news."""
+        try:
+            return signals.signal(sembol)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/tara")
+    async def tara(
+        tavsiye: str | None = Query("AL", pattern="^(AL|SAT|TUT)$"),
+        sablon: str | None = Query(None, alias="sablon"),
+        limit: int = Query(20, ge=1, le=100),
+    ):
+        """Whole-BIST screener (borsapy.screen_stocks); default: AL candidates."""
+        try:
+            return signals.scan(recommendation=tavsiye, template=sablon, limit=limit)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/alarm/olaylar")
     async def events(after: str = Query("", max_length=64)):

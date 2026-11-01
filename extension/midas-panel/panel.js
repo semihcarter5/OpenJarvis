@@ -4,14 +4,27 @@
 // OpenJarvis sunucusuna CORS'tan etkilenmeden fetch edebilir. Hiçbir zaman
 // Midas sayfasına yazmaz veya gerçek emir göndermez. "Al"/"Sat" butonları
 // yalnızca openjarvis.borsa.portfolio'daki SANAL (kağıt) portföyü etkiler.
+// Sinyal/tarama otomatik teknik gösterge + analist görüşü özetidir, yatırım
+// tavsiyesi değildir.
 
 const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 const POLL_MS = 30_000;
 
+let paused = false;
+let pollTimer = null;
+
 const els = {
   status: document.getElementById("status"),
+  pauseToggle: document.getElementById("pause-toggle"),
   watchlistBody: document.querySelector("#watchlist tbody"),
   watchlistEmpty: document.getElementById("watchlist-empty"),
+  takipInput: document.getElementById("takip-ekle-input"),
+  takipBtn: document.getElementById("takip-ekle-btn"),
+  signalDetail: document.getElementById("signal-detail"),
+  scanTavsiye: document.getElementById("scan-tavsiye"),
+  scanRun: document.getElementById("scan-run"),
+  scanResults: document.getElementById("scan-results"),
+  scanEmpty: document.getElementById("scan-empty"),
   portfolioSummary: document.getElementById("portfolio-summary"),
   portfolioBody: document.querySelector("#portfolio-positions tbody"),
   portfolioEmpty: document.getElementById("portfolio-empty"),
@@ -41,6 +54,13 @@ function pnlClass(n) {
   return typeof n === "number" && n < 0 ? "pnl-down" : "pnl-up";
 }
 
+function verdictClass(verdict) {
+  if (!verdict) return "verdict-neutral";
+  if (verdict.startsWith("AL")) return "verdict-buy";
+  if (verdict.startsWith("SAT")) return "verdict-sell";
+  return "verdict-neutral";
+}
+
 async function getApiBase() {
   const stored = await chrome.storage.local.get("apiBase");
   return stored.apiBase || DEFAULT_API_BASE;
@@ -52,7 +72,10 @@ async function setApiBase(url) {
 
 async function fetchJson(base, path, params = {}) {
   const url = new URL(path, base);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  for (const [k, v] of Object.entries(params)) {
+    if (Array.isArray(v)) v.forEach((x) => url.searchParams.append(k, x));
+    else url.searchParams.set(k, v);
+  }
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return res.json();
@@ -80,12 +103,26 @@ function renderWatchlist(items) {
       ? `<td>${item.symbol}</td><td colspan="3">${item.error}</td>`
       : `<td>${item.symbol}</td><td>${fmtNumber(item.last)}</td>` +
         `<td class="${cls}">${fmtChange(pct)}</td><td></td>`;
+    const cell = tr.lastElementChild;
+    if (!item.error && item.kind === "stock") {
+      const sigBtn = document.createElement("button");
+      sigBtn.className = "signal";
+      sigBtn.textContent = "Sinyal";
+      sigBtn.addEventListener("click", () => showSignal(item.symbol));
+      cell.appendChild(sigBtn);
+    }
     if (!item.error) {
-      const btn = document.createElement("button");
-      btn.className = "buy";
-      btn.textContent = "Al";
-      btn.addEventListener("click", () => buyPrompt(item.symbol));
-      tr.lastElementChild.appendChild(btn);
+      const buyBtn = document.createElement("button");
+      buyBtn.className = "buy";
+      buyBtn.textContent = "Al";
+      buyBtn.addEventListener("click", () => buyPrompt(item.symbol));
+      cell.appendChild(buyBtn);
+    }
+    if (item.kaynak && item.kaynak.includes("takip")) {
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "Sil";
+      delBtn.addEventListener("click", () => removeTakip(item.symbol));
+      cell.appendChild(delBtn);
     }
     els.watchlistBody.appendChild(tr);
   }
@@ -117,11 +154,17 @@ function renderPortfolio(summary) {
       `<td>${fmtNumber(p.avg_cost)}</td><td>${fmtNumber(p.last)}</td>` +
       `<td class="${pnlClass(p.unrealized_pnl)}">${fmtMoney(p.unrealized_pnl)} ` +
       `(${fmtChange(p.unrealized_pnl_pct)})</td><td></td>`;
-    const btn = document.createElement("button");
-    btn.className = "sell";
-    btn.textContent = "Sat";
-    btn.addEventListener("click", () => sellAll(p.symbol));
-    tr.lastElementChild.appendChild(btn);
+    const cell = tr.lastElementChild;
+    const sigBtn = document.createElement("button");
+    sigBtn.className = "signal";
+    sigBtn.textContent = "Sinyal";
+    sigBtn.addEventListener("click", () => showSignal(p.symbol));
+    cell.appendChild(sigBtn);
+    const sellBtn = document.createElement("button");
+    sellBtn.className = "sell";
+    sellBtn.textContent = "Sat";
+    sellBtn.addEventListener("click", () => sellAll(p.symbol));
+    cell.appendChild(sellBtn);
     els.portfolioBody.appendChild(tr);
   }
 }
@@ -135,6 +178,85 @@ function renderEvents(events) {
     const when = new Date(ev.at).toLocaleString("tr-TR");
     li.textContent = `${ev.symbol} — ${ev.message} (${when})`;
     els.events.appendChild(li);
+  }
+}
+
+async function showSignal(symbol) {
+  els.signalDetail.innerHTML = `<p class="empty">${symbol} için sinyal yükleniyor…</p>`;
+  const base = await getApiBase();
+  try {
+    const result = await fetchJson(base, "/api/borsa/sinyal", { sembol: symbol });
+    const horizons = Object.values(result.horizons)
+      .map(
+        (h) =>
+          `<div class="horizon"><span>${h.label}</span>` +
+          `<span class="${verdictClass(h.verdict)}">${h.verdict}</span></div>`
+      )
+      .join("");
+    const an = result.analyst_recommendation;
+    const analystLine = an
+      ? `<p>Analist görüşü: güçlü al ${an.strongBuy ?? 0}, al ${an.buy ?? 0}, ` +
+        `tut ${an.hold ?? 0}, sat ${an.sell ?? 0}, güçlü sat ${an.strongSell ?? 0}</p>`
+      : "";
+    const news = (result.news ?? [])
+      .slice(0, 5)
+      .map(
+        (n) =>
+          `<a class="news-item" href="${n.url}" target="_blank" rel="noopener">` +
+          `<span class="news-date">${n.date}</span> ${n.title}</a>`
+      )
+      .join("");
+    els.signalDetail.innerHTML =
+      `<strong>${result.symbol}</strong>${horizons}${analystLine}` +
+      (news ? `<p>Son haberler:</p>${news}` : "") +
+      `<p class="empty">${result.disclaimer}</p>`;
+  } catch (err) {
+    els.signalDetail.innerHTML = `<p class="empty">Sinyal alınamadı: ${err.message}</p>`;
+  }
+}
+
+async function runScan() {
+  const base = await getApiBase();
+  els.scanResults.innerHTML = "";
+  els.scanEmpty.hidden = true;
+  try {
+    const result = await fetchJson(base, "/api/borsa/tara", {
+      tavsiye: els.scanTavsiye.value,
+      limit: 15,
+    });
+    els.scanEmpty.hidden = result.items.length > 0;
+    for (const item of result.items) {
+      const li = document.createElement("li");
+      li.textContent = `${item.symbol} — ${item.name}`;
+      els.scanResults.appendChild(li);
+    }
+  } catch (err) {
+    els.scanEmpty.hidden = false;
+    els.scanEmpty.textContent = `Tarama başarısız: ${err.message}`;
+  }
+}
+
+async function addTakip() {
+  const symbol = els.takipInput.value.trim();
+  if (!symbol) return;
+  const base = await getApiBase();
+  try {
+    await postJson(base, "/api/borsa/takip/ekle", { sembol: symbol });
+    els.takipInput.value = "";
+    refresh();
+  } catch (err) {
+    window.alert(`Eklenemedi: ${err.message}`);
+  }
+}
+
+async function removeTakip(symbol) {
+  if (!window.confirm(`${symbol} takip listesinden çıkarılsın mı?`)) return;
+  const base = await getApiBase();
+  try {
+    await postJson(base, "/api/borsa/takip/sil", { sembol: symbol });
+    refresh();
+  } catch (err) {
+    window.alert(`Çıkarılamadı: ${err.message}`);
   }
 }
 
@@ -199,6 +321,7 @@ async function resetPortfolio() {
 }
 
 async function refresh() {
+  if (paused) return;
   const base = await getApiBase();
   try {
     const [watch, eventsRes, portfolioRes] = await Promise.all([
@@ -216,6 +339,13 @@ async function refresh() {
   }
 }
 
+function togglePause() {
+  paused = !paused;
+  els.pauseToggle.textContent = paused ? "Devam ettir" : "Duraklat";
+  els.pauseToggle.classList.toggle("paused", paused);
+  if (!paused) refresh();
+}
+
 async function init() {
   els.apiBase.value = await getApiBase();
   els.apiBase.addEventListener("change", async () => {
@@ -223,8 +353,14 @@ async function init() {
     refresh();
   });
   els.portfolioReset.addEventListener("click", resetPortfolio);
+  els.takipBtn.addEventListener("click", addTakip);
+  els.takipInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addTakip();
+  });
+  els.scanRun.addEventListener("click", runScan);
+  els.pauseToggle.addEventListener("click", togglePause);
   await refresh();
-  setInterval(refresh, POLL_MS);
+  pollTimer = setInterval(refresh, POLL_MS);
 }
 
 init();

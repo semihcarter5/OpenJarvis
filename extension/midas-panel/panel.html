@@ -8,17 +8,25 @@
   <body>
     <header>
       <h1>OpenJarvis Borsa</h1>
-      <span id="status" class="status">bağlanıyor…</span>
+      <div class="header-right">
+        <button id="pause-toggle" type="button" class="pause">Duraklat</button>
+        <span id="status" class="status">bağlanıyor…</span>
+      </div>
     </header>
 
     <p class="disclaimer">
       Midas hesabınıza erişmez, gerçek emir vermez. "Al"/"Sat" butonları
-      tamamen SANAL bir portföy üzerindedir. Fiyatlar ~15 dk gecikmelidir.
-      Yatırım tavsiyesi değildir.
+      tamamen SANAL bir portföy üzerindedir. Sinyal/tarama, teknik gösterge
+      ve analist görüşlerinin otomatik özetidir — yatırım tavsiyesi değildir,
+      kâr garantisi vermez. Fiyatlar ~15 dk gecikmelidir.
     </p>
 
     <section>
       <h2>İzleme listesi</h2>
+      <div class="add-row">
+        <input id="takip-ekle-input" type="text" placeholder="Sembol ekle (örn. ASELS)" />
+        <button id="takip-ekle-btn" type="button">Ekle</button>
+      </div>
       <table id="watchlist">
         <thead>
           <tr>
@@ -31,9 +39,30 @@
         <tbody></tbody>
       </table>
       <p id="watchlist-empty" class="empty" hidden>
-        Henüz alarm eklenmedi — <code>jarvis borsa alarm ekle</code> ile
-        ekleyin.
+        Henüz sembol yok — yukarıdan ekleyin ya da
+        <code>jarvis borsa alarm ekle</code> kullanın.
       </p>
+    </section>
+
+    <section>
+      <h2>Sinyal detayı</h2>
+      <div id="signal-detail" class="signal-detail">
+        <p class="empty">Bir sembolde "Sinyal" butonuna tıkla.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>BIST taraması</h2>
+      <div class="scan-controls">
+        <select id="scan-tavsiye">
+          <option value="AL">AL adayları</option>
+          <option value="SAT">SAT adayları</option>
+          <option value="TUT">TUT (bekle)</option>
+        </select>
+        <button id="scan-run" type="button">Tara</button>
+      </div>
+      <ul id="scan-results"></ul>
+      <p id="scan-empty" class="empty" hidden>Sonuç yok.</p>
     </section>
 
     <section>

@@ -321,3 +321,114 @@ def portfoy_sifirla(bakiye: float | None) -> None:
     except data.BorsaError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Sıfırlandı: {bakiye or portfolio.DEFAULT_BALANCE:,.2f} TL sanal bakiye.")
+
+
+# -- takip listesi, sinyal, tarama -------------------------------------------
+
+
+@borsa.group("takip")
+def takip() -> None:
+    """Fiyat/sinyal/haber için takip ettiğin semboller (alarmdan bağımsız)."""
+
+
+@takip.command("ekle")
+@click.argument("symbol")
+def takip_ekle(symbol: str) -> None:
+    """Takip listesine sembol ekle. Örnek: jarvis borsa takip ekle ASELS"""
+    from openjarvis.borsa import data, watchlist
+
+    try:
+        added = watchlist.WatchlistStore().add(symbol)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Takibe eklendi: {added}")
+
+
+@takip.command("sil")
+@click.argument("symbol")
+def takip_sil(symbol: str) -> None:
+    """Takip listesinden sembol çıkar."""
+    from openjarvis.borsa import data, watchlist
+
+    try:
+        removed = watchlist.WatchlistStore().remove(symbol)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not removed:
+        raise click.ClickException(f"{symbol} takipte değil.")
+    click.echo(f"Takipten çıkarıldı: {symbol}")
+
+
+@takip.command("liste")
+def takip_liste() -> None:
+    """Takip listesini göster."""
+    from openjarvis.borsa import watchlist
+
+    symbols = watchlist.WatchlistStore().list()
+    click.echo(", ".join(symbols) if symbols else "Takip listesi boş.")
+
+
+@borsa.command("sinyal")
+@click.argument("symbol")
+@click.option("--json", "as_json", is_flag=True, help="Ham JSON çıktısı.")
+def sinyal(symbol: str, as_json: bool) -> None:
+    """Kısa/orta/uzun vade al-sat-bekle sinyali, analist görüşü, son haberler.
+
+    Örnek: jarvis borsa sinyal THYAO
+    """
+    from openjarvis.borsa import data, signals
+
+    try:
+        result = signals.signal(symbol)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    click.echo(f"{result['symbol']} sinyalleri:")
+    for h in result["horizons"].values():
+        click.echo(f"  {h['label']:<32} {h['verdict']} (skor {h['score']:+.1f})")
+    an = result.get("analyst_recommendation")
+    if an:
+        click.echo(
+            f"\nAnalist görüşü: güçlü al {an.get('strongBuy', 0)}, al {an.get('buy', 0)}, "
+            f"tut {an.get('hold', 0)}, sat {an.get('sell', 0)}, güçlü sat "
+            f"{an.get('strongSell', 0)}"
+        )
+    if result["news"]:
+        click.echo("\nSon haberler:")
+        for n in result["news"]:
+            click.echo(f"  [{n['date']}] {n['title']}\n    {n['url']}")
+    click.echo(f"\n{result['disclaimer']}")
+
+
+@borsa.command("tara")
+@click.option("--tavsiye", type=click.Choice(["AL", "SAT", "TUT"]), default="AL",
+              show_default=True, help="Analist tavsiyesi filtresi.")
+@click.option("--sablon", default=None,
+              help="borsapy şablonu: small_cap, high_dividend, high_upside, "
+                   "buy_recommendation, sell_recommendation, high_return, vb.")
+@click.option("--limit", type=int, default=20, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Ham JSON çıktısı.")
+def tara(tavsiye: str, sablon: str | None, limit: int, as_json: bool) -> None:
+    """Tüm BIST'i tara (borsapy), eşleşen hisseleri listele.
+
+    Örnek: jarvis borsa tara --tavsiye AL --sablon high_upside
+    """
+    from openjarvis.borsa import data, signals
+
+    try:
+        result = signals.scan(recommendation=tavsiye, template=sablon, limit=limit)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    click.echo(
+        f"Tarama ({result['recommendation'] or '-'}"
+        + (f", şablon {result['template']}" if result["template"] else "")
+        + f"): {result['count']} eşleşme, ilk {len(result['items'])} gösteriliyor"
+    )
+    for item in result["items"]:
+        click.echo(f"  {item['symbol']:<10} {item['name']}")
+    click.echo(f"\n{result['disclaimer']}")
