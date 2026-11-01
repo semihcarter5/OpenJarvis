@@ -1,28 +1,71 @@
-"""FastAPI routes for borsa level alarms (browser notification feed)."""
+"""FastAPI routes for borsa quotes, analysis and level alarms.
+
+Every route here is read-only: no order placement, no write access to a
+brokerage. Intended for the Midas side-panel browser extension and the
+desktop UI's polling feed.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
 
-from fastapi import APIRouter, FastAPI, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 
 logger = logging.getLogger(__name__)
 
+_SYMBOL_QUERY = Query(..., min_length=1, max_length=20, alias="sembol")
+
 
 def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
-    """Read-only alarm endpoints; the web UI polls ``/olaylar`` for triggers."""
+    """Read-only quote/analysis/alarm endpoints for the Midas side panel."""
+    from openjarvis.borsa import analysis, data
     from openjarvis.borsa.alarms import AlarmStore
 
-    router = APIRouter(prefix="/api/borsa/alarm", tags=["borsa"])
+    router = APIRouter(prefix="/api/borsa", tags=["borsa"])
     store = store or AlarmStore()
 
-    @router.get("/olaylar")
+    @router.get("/fiyat")
+    async def fiyat(sembol: str = _SYMBOL_QUERY):
+        """Latest (delayed) price for one BIST stock, currency or gold."""
+        try:
+            asset = data.resolve(sembol)
+            return {"symbol": asset.display, "kind": asset.kind, **data.quote(asset)}
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/analiz")
+    async def analiz(
+        sembol: str = _SYMBOL_QUERY,
+        period: str = Query("1y", enum=list(data.VALID_PERIODS)),
+    ):
+        """Technical summary (trend score, RSI, MACD, support/resistance)."""
+        try:
+            return analysis.analyze(sembol, period)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/izleme")
+    async def izleme():
+        """Watchlist: one quote per distinct symbol across saved alarms."""
+        symbols = sorted({a.symbol for a in store.load()})
+        items = []
+        for symbol in symbols:
+            try:
+                asset = data.resolve(symbol)
+                items.append(
+                    {"symbol": asset.display, "kind": asset.kind, **data.quote(asset)}
+                )
+            except data.BorsaError as exc:
+                items.append({"symbol": symbol, "error": str(exc)})
+        return {"items": items}
+
+    @router.get("/alarm/olaylar")
     async def events(after: str = Query("", max_length=64)):
         """Triggered alarm events newer than event id ``after``."""
         return {"events": store.events(after)}
 
-    @router.get("/liste")
+    @router.get("/alarm/liste")
     async def list_alarms():
         from dataclasses import asdict
 

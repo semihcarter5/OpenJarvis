@@ -281,3 +281,76 @@ def test_http_event_feed(store):
     after = client.get("/api/borsa/alarm/olaylar", params={"after": events[0]["id"]})
     assert after.json()["events"] == []
     assert len(client.get("/api/borsa/alarm/liste").json()["alarms"]) == 1
+
+
+def test_http_fiyat(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.get("/api/borsa/fiyat", params={"sembol": "thyao"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["symbol"] == "THYAO" and body["last"] == 225.0
+
+    bad = client.get("/api/borsa/fiyat", params={"sembol": "THY;rm"})
+    assert bad.status_code == 400
+
+
+def test_http_analiz(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.get("/api/borsa/analiz", params={"sembol": "THYAO", "period": "6mo"})
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "THYAO"
+
+    bad = client.get("/api/borsa/analiz", params={"sembol": "THYAO", "period": "10y"})
+    assert bad.status_code == 400  # not a valid VALID_PERIODS value
+
+
+def test_http_izleme(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    store.add("THYAO", "fiyat", "alti", 230)
+    store.add("USD", "fiyat", "alti", 60)
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.get("/api/borsa/izleme")
+    assert res.status_code == 200
+    items = {i["symbol"]: i for i in res.json()["items"]}
+    assert items["THYAO"]["last"] == 225.0
+    assert items["USD"]["last"] == 50.5
+
+
+def test_http_izleme_reports_provider_error_without_failing(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    store.add("THYAO", "fiyat", "alti", 230)
+    store.add("ASELS", "fiyat", "alti", 230)  # resolves fine, no price in fake_bp
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    items = {i["symbol"]: i for i in client.get("/api/borsa/izleme").json()["items"]}
+    assert items["THYAO"]["last"] == 225.0
+    assert "error" in items["ASELS"]

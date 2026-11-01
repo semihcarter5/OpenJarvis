@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenJarvis Borsa Paneli</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>OpenJarvis Borsa</h1>
+      <span id="status" class="status">bağlanıyor…</span>
+    </header>
+
+    <p class="disclaimer">
+      Salt-okur panel — emir vermez, Midas hesabınıza erişmez. Fiyatlar
+      ~15 dk gecikmelidir. Yatırım tavsiyesi değildir.
+    </p>
+
+    <section>
+      <h2>İzleme listesi</h2>
+      <table id="watchlist">
+        <thead>
+          <tr>
+            <th>Sembol</th>
+            <th>Son</th>
+            <th>Değişim</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="watchlist-empty" class="empty" hidden>
+        Henüz alarm eklenmedi — <code>jarvis borsa alarm ekle</code> ile
+        ekleyin.
+      </p>
+    </section>
+
+    <section>
+      <h2>Son tetiklenen alarmlar</h2>
+      <ul id="events"></ul>
+      <p id="events-empty" class="empty" hidden>Son 24 saatte tetiklenen alarm yok.</p>
+    </section>
+
+    <footer>
+      <label for="api-base">API adresi</label>
+      <input id="api-base" type="text" placeholder="http://127.0.0.1:8000" />
+    </footer>
+
+    <script src="panel.js"></script>
+  </body>
+</html>
