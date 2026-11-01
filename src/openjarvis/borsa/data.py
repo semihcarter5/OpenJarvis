@@ -123,13 +123,18 @@ def quote(asset: Asset) -> dict[str, Any]:
     def fetch() -> dict[str, Any]:
         bp = _bp()
         try:
+            # borsapy's ``.info``/``.current`` are lazy: the network call
+            # actually fires on first dict access (``.get``), not on the
+            # property access itself, so that access must stay in the
+            # try too or a provider error escapes as a raw exception.
             if asset.kind == "stock":
                 info = bp.Ticker(asset.symbol).info
             else:
                 info = bp.FX(asset.symbol).current
+            has_last = bool(info) and info.get("last") is not None
         except Exception as exc:
             raise BorsaError(f"{asset.display} fiyatı alınamadı: {exc}") from exc
-        if not info or info.get("last") is None:
+        if not has_last:
             raise BorsaError(f"{asset.display} için fiyat yok (sembol doğru mu?).")
         keys = ("last", "open", "high", "low", "change", "change_percent",
                 "volume", "update_time")

@@ -177,6 +177,30 @@ def test_quote_drops_none_and_stringifies_time(fake_bp):
     assert q["last"] == 49.9 and isinstance(q["update_time"], str)
 
 
+class _LazyBoom:
+    """Mimics borsapy's real TickerInfo: the ``.info``/``.current`` property
+    access itself always succeeds, but the actual network fetch only fires
+    on first dict access (``.get``) - that's where a provider error like
+    "No quote data received" actually surfaces (regression for #izleme 500)."""
+
+    def __bool__(self) -> bool:
+        return True
+
+    def get(self, key, default=None):  # noqa: ANN001
+        raise RuntimeError("No quote data received for BIST:DESE")
+
+
+def test_quote_wraps_a_lazy_provider_failure(monkeypatch, fake_bp):
+    class LazyFailTicker(_FakeBP.Ticker):
+        @property
+        def info(self):
+            return _LazyBoom()
+
+    monkeypatch.setattr(_FakeBP, "Ticker", LazyFailTicker)
+    with pytest.raises(data.BorsaError, match="fiyatı alınamadı"):
+        data.quote(data.resolve("DESE"))
+
+
 def test_tools_registered_and_execute(fake_bp):
     import importlib
 

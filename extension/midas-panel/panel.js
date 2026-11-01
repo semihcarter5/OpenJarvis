@@ -105,7 +105,7 @@ function renderWatchlist(items) {
     const pct = item.change_percent;
     const cls = typeof pct === "number" ? (pct >= 0 ? "up" : "down") : "";
     tr.innerHTML = item.error
-      ? `<td>${item.symbol}</td><td colspan="3">${item.error}</td>`
+      ? `<td>${item.symbol}</td><td colspan="2">${item.error}</td><td></td>`
       : `<td>${item.symbol}</td><td>${fmtNumber(item.last)}</td>` +
         `<td class="${cls}">${fmtChange(pct)}</td><td></td>`;
     const cell = tr.lastElementChild;
