@@ -42,7 +42,7 @@ class _SymbolRequest(BaseModel):
 
 def create_borsa_router(store=None, watchlist=None) -> APIRouter:  # noqa: ANN001
     """Quote/analysis/alarm/paper-portfolio endpoints for the Midas side panel."""
-    from openjarvis.borsa import analysis, data, portfolio, signals
+    from openjarvis.borsa import analysis, data, hindsight, portfolio, signals
     from openjarvis.borsa.alarms import AlarmStore
     from openjarvis.borsa.watchlist import WatchlistStore
 
@@ -177,6 +177,19 @@ def create_borsa_router(store=None, watchlist=None) -> APIRouter:  # noqa: ANN00
         """Whole-BIST screener (borsapy.screen_stocks); default: AL candidates."""
         try:
             return signals.scan(recommendation=tavsiye, template=sablon, limit=limit)
+        except data.BorsaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/gecmis")
+    async def gecmis(
+        sembol: str = _SYMBOL_QUERY,
+        tarih: str = Query(..., description="YYYY-AA-GG"),
+        tutar: float = Query(..., gt=0),
+        donem: str = Query("5y", enum=list(data.VALID_PERIODS)),
+    ):
+        """Hindsight: 'if I'd bought on this date' - never a real/virtual order."""
+        try:
+            return hindsight.what_if(sembol, tarih, tutar, period=donem)
         except data.BorsaError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

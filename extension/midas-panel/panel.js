@@ -25,6 +25,11 @@ const els = {
   scanRun: document.getElementById("scan-run"),
   scanResults: document.getElementById("scan-results"),
   scanEmpty: document.getElementById("scan-empty"),
+  hindsightSymbol: document.getElementById("hindsight-symbol"),
+  hindsightDate: document.getElementById("hindsight-date"),
+  hindsightAmount: document.getElementById("hindsight-amount"),
+  hindsightRun: document.getElementById("hindsight-run"),
+  hindsightResult: document.getElementById("hindsight-result"),
   portfolioSummary: document.getElementById("portfolio-summary"),
   portfolioBody: document.querySelector("#portfolio-positions tbody"),
   portfolioEmpty: document.getElementById("portfolio-empty"),
@@ -236,6 +241,38 @@ async function runScan() {
   }
 }
 
+async function runHindsight() {
+  const symbol = els.hindsightSymbol.value.trim();
+  const dateStr = els.hindsightDate.value;
+  const amount = Number(els.hindsightAmount.value);
+  if (!symbol || !dateStr || !Number.isFinite(amount) || amount <= 0) {
+    els.hindsightResult.innerHTML =
+      `<p class="empty">Sembol, tarih ve geçerli bir tutar girin.</p>`;
+    return;
+  }
+  els.hindsightResult.innerHTML = `<p class="empty">Hesaplanıyor…</p>`;
+  const base = await getApiBase();
+  try {
+    const r = await fetchJson(base, "/api/borsa/gecmis", {
+      sembol: symbol,
+      tarih: dateStr,
+      tutar: amount,
+    });
+    const sign = r.profit >= 0 ? "+" : "";
+    const cls = r.profit >= 0 ? "pnl-up" : "pnl-down";
+    els.hindsightResult.innerHTML =
+      `<p><strong>${r.symbol}</strong>: ${r.buy_date} tarihinde ${fmtMoney(r.amount)} ` +
+      `(${fmtNumber(r.buy_price)} TL'den ${r.quantity.toFixed(4)} adet) alınsaydı,</p>` +
+      `<p>${r.last_date} itibarıyla (${fmtNumber(r.last_price)} TL) değeri ` +
+      `${fmtMoney(r.current_value)} olurdu.</p>` +
+      `<p class="${cls}">Kâr/zarar: ${sign}${fmtMoney(r.profit)} ` +
+      `(${sign}${r.profit_pct.toFixed(2)}%, ${r.days} gün)</p>` +
+      `<p class="empty">${r.disclaimer}</p>`;
+  } catch (err) {
+    els.hindsightResult.innerHTML = `<p class="empty">Hesaplanamadı: ${err.message}</p>`;
+  }
+}
+
 async function addTakip() {
   const symbol = els.takipInput.value.trim();
   if (!symbol) return;
@@ -358,6 +395,7 @@ async function init() {
     if (e.key === "Enter") addTakip();
   });
   els.scanRun.addEventListener("click", runScan);
+  els.hindsightRun.addEventListener("click", runHindsight);
   els.pauseToggle.addEventListener("click", togglePause);
   await refresh();
   pollTimer = setInterval(refresh, POLL_MS);

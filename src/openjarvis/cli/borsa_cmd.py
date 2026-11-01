@@ -432,3 +432,27 @@ def tara(tavsiye: str, sablon: str | None, limit: int, as_json: bool) -> None:
     for item in result["items"]:
         click.echo(f"  {item['symbol']:<10} {item['name']}")
     click.echo(f"\n{result['disclaimer']}")
+
+
+@borsa.command("gecmis")
+@click.argument("symbol")
+@click.argument("tarih")
+@click.argument("tutar", type=float)
+@click.option("--donem", "period", type=click.Choice(_PERIODS), default="5y",
+              show_default=True, help="Ne kadar geriye kadar veri aransın.")
+@click.option("--json", "as_json", is_flag=True, help="Ham JSON çıktısı.")
+def gecmis(symbol: str, tarih: str, tutar: float, period: str, as_json: bool) -> None:
+    """Geçmişte alsaydım bugün ne kazanırdım? Gerçek bir işlem değildir.
+
+    Örnek: jarvis borsa gecmis THYAO 2024-01-02 10000
+    """
+    from openjarvis.borsa import data, hindsight
+
+    try:
+        result = hindsight.what_if(symbol, tarih, tutar, period=period)
+    except data.BorsaError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        click.echo(hindsight.format_what_if(result))

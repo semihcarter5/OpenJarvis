@@ -66,6 +66,17 @@
     </section>
 
     <section>
+      <h2>Geçmişte alsaydım?</h2>
+      <div class="hindsight-form">
+        <input id="hindsight-symbol" type="text" placeholder="Sembol (örn. THYAO)" />
+        <input id="hindsight-date" type="date" />
+        <input id="hindsight-amount" type="number" min="1" step="any" placeholder="Tutar (TL)" />
+        <button id="hindsight-run" type="button">Hesapla</button>
+      </div>
+      <div id="hindsight-result" class="signal-detail"></div>
+    </section>
+
+    <section>
       <h2>Sanal portföy</h2>
       <div id="portfolio-summary" class="summary"></div>
       <table id="portfolio-positions">

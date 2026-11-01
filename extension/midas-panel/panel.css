@@ -241,6 +241,26 @@ button.signal {
   margin-left: 4px;
 }
 
+.hindsight-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.hindsight-form input {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.hindsight-form button {
+  grid-column: span 2;
+}
+
 footer {
   margin-top: 16px;
   display: flex;
