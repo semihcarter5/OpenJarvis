@@ -339,6 +339,52 @@ def test_http_izleme(store):
     assert items["USD"]["last"] == 50.5
 
 
+def test_http_turnuva(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.get("/api/borsa/turnuva", params={"sembol": ["THYAO", "USD"]})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["symbols"] == ["THYAO", "USD"]
+    assert body["leaderboard"]
+
+
+def test_http_turnuva_falls_back_to_alarm_watchlist(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    store.add("THYAO", "fiyat", "alti", 230)
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    res = client.get("/api/borsa/turnuva")
+    assert res.status_code == 200
+    assert res.json()["symbols"] == ["THYAO"]
+
+
+def test_http_turnuva_no_symbols_is_400(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.borsa_routes import create_borsa_router
+
+    app = FastAPI()
+    app.include_router(create_borsa_router(store))
+    client = TestClient(app)
+
+    assert client.get("/api/borsa/turnuva").status_code == 400
+
+
 def test_http_izleme_reports_provider_error_without_failing(store):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

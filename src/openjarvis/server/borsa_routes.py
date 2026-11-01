@@ -60,6 +60,22 @@ def create_borsa_router(store=None) -> APIRouter:  # noqa: ANN001
                 items.append({"symbol": symbol, "error": str(exc)})
         return {"items": items}
 
+    @router.get("/turnuva")
+    async def turnuva(
+        sembol: list[str] = Query([], alias="sembol"),
+        period: str = Query("6mo", enum=list(data.VALID_PERIODS)),
+    ):
+        """Weekly strategy backtest leaderboard. No symbols = alarm watchlist."""
+        from openjarvis.borsa import tournament
+
+        symbols = sembol or sorted({a.symbol for a in store.load()})
+        if not symbols:
+            raise HTTPException(
+                status_code=400,
+                detail="Sembol yok: ?sembol= ile verin ya da önce alarm ekleyin.",
+            )
+        return tournament.run_tournament(symbols, period=period)
+
     @router.get("/alarm/olaylar")
     async def events(after: str = Query("", max_length=64)):
         """Triggered alarm events newer than event id ``after``."""
@@ -95,3 +111,24 @@ def install_borsa_alarms(app: FastAPI) -> None:
     @app.on_event("shutdown")
     async def _stop_borsa_watcher() -> None:
         watcher.stop()
+
+
+def install_borsa_tournament(app: FastAPI) -> None:
+    """Run the weekly strategy-tournament scheduler while the server is up.
+
+    Set ``OPENJARVIS_BORSA_TOURNAMENT_WATCH=0`` to disable it.
+    """
+    if os.environ.get("OPENJARVIS_BORSA_TOURNAMENT_WATCH", "1") == "0":
+        return
+    from openjarvis.borsa.tournament import TournamentScheduler
+
+    scheduler = TournamentScheduler()
+
+    @app.on_event("startup")
+    async def _start_borsa_tournament() -> None:
+        scheduler.start()
+        logger.info("Borsa strateji turnuvası zamanlayıcısı başladı")
+
+    @app.on_event("shutdown")
+    async def _stop_borsa_tournament() -> None:
+        scheduler.stop()

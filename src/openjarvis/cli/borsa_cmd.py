@@ -176,3 +176,81 @@ def alarm_izle(interval: int) -> None:
             time.sleep(1)
     except KeyboardInterrupt:
         watcher.stop()
+
+
+# -- strategy tournament --------------------------------------------------
+
+
+_WEEKDAYS = {
+    "pazartesi": 0, "sali": 1, "çarşamba": 2, "carsamba": 2, "perşembe": 3,
+    "persembe": 3, "cuma": 4, "cumartesi": 5, "pazar": 6,
+}
+
+
+@borsa.group("turnuva")
+def turnuva() -> None:
+    """Haftalık strateji turnuvası: basit kuralları geriye dönük test edip
+    sıralar. Emir vermez, geçmiş veriye dayalı backtest'tir."""
+
+
+@turnuva.command("calistir")
+@click.argument("symbols", nargs=-1)
+@click.option("--donem", "period", type=click.Choice(_PERIODS), default="6mo",
+              show_default=True, help="Geriye dönük test dönemi.")
+@click.option("--json", "as_json", is_flag=True, help="Ham JSON çıktısı.")
+@click.option("--telegram", "send_telegram_flag", is_flag=True,
+              help="Sonucu Telegram'a da gönder.")
+def turnuva_calistir(
+    symbols: tuple[str, ...], period: str, as_json: bool, send_telegram_flag: bool
+) -> None:
+    """Turnuvayı şimdi bir kez çalıştır. Sembol verilmezse alarm listesindeki
+    semboller kullanılır. Örnek: jarvis borsa turnuva calistir THYAO ASELS
+    """
+    from openjarvis.borsa import tournament
+
+    syms = list(symbols) or tournament.default_symbols()
+    if not syms:
+        raise click.ClickException(
+            "Sembol yok: argüman verin ya da önce 'jarvis borsa alarm ekle' ile "
+            "izleme listesine sembol ekleyin."
+        )
+    result = tournament.run_tournament(syms, period=period)
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        click.echo(tournament.format_report(result))
+    if send_telegram_flag:
+        sent = tournament.send_telegram_report(result)
+        if sent is None:
+            click.echo(
+                "Telegram ayarlı değil (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).",
+                err=True,
+            )
+        elif sent is False:
+            click.echo("Telegram gönderimi başarısız.", err=True)
+
+
+@turnuva.command("izle")
+@click.option("--gun", "weekday", type=click.Choice(sorted(_WEEKDAYS)),
+              default="pazartesi", show_default=True, help="Haftalık çalışma günü.")
+@click.option("--saat", "hour", type=click.IntRange(0, 23), default=9,
+              show_default=True, help="Çalışma saati (yerel, 24 saat).")
+@click.option("--donem", "period", type=click.Choice(_PERIODS), default="6mo",
+              show_default=True)
+def turnuva_izle(weekday: str, hour: int, period: str) -> None:
+    """Ön planda haftalık zamanlayıcı (Ctrl+C durdurur; 'jarvis serve' açıksa
+    gerekmez). Seçilen gün/saatte turnuvayı çalıştırıp Telegram'a gönderir."""
+    import time
+
+    from openjarvis.borsa import tournament
+
+    watcher = tournament.TournamentScheduler(
+        weekday=_WEEKDAYS[weekday], hour=hour, period=period
+    )
+    click.echo(f"Turnuva izleniyor (her {weekday} saat {hour:02d}:00). Durdurmak: Ctrl+C.")
+    watcher.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        watcher.stop()
