@@ -482,6 +482,16 @@ def create_app(
     app.include_router(upload_router)
     app.include_router(research_router)
     app.include_router(analytics_router)
+    try:
+        from openjarvis.server.borsa_routes import (
+            install_borsa_alarms,
+            install_borsa_tournament,
+        )
+
+        install_borsa_alarms(app)
+        install_borsa_tournament(app)
+    except Exception as _exc:  # pragma: no cover - optional feature
+        logger.debug("Borsa alarm routes skipped: %s", _exc)
     include_all_routes(app)
 
     # Restore SendBlue channel bindings from database on startup

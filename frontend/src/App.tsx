@@ -16,6 +16,7 @@ import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri } fr
 import { OptInModal } from './components/OptInModal';
 import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
+import { useBorsaAlarms } from './lib/useBorsaAlarms';
 import { offerAnalyticsChoice } from './lib/analytics-invitation';
 
 export default function App() {
@@ -157,6 +158,9 @@ export default function App() {
   }, []);
 
   const toggleSystemPanel = useAppStore((s) => s.toggleSystemPanel);
+
+  // Browser notifications for triggered borsa level alarms
+  useBorsaAlarms();
 
   // Global keyboard shortcuts
   useEffect(() => {

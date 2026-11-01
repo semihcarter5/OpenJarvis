@@ -102,6 +102,7 @@ if not _DATA_BOUNDARY_BOOTSTRAP:
     from openjarvis.cli.agent_cmd import agent
     from openjarvis.cli.ask import ask
     from openjarvis.cli.bench_cmd import bench
+    from openjarvis.cli.borsa_cmd import borsa
     from openjarvis.cli.channel_cmd import channel
     from openjarvis.cli.channels_cmd import channels
     from openjarvis.cli.chat_cmd import chat
@@ -166,6 +167,7 @@ if not _DATA_BOUNDARY_BOOTSTRAP:
     cli.add_command(compose, "compose")
     cli.add_command(gateway, "gateway")
     cli.add_command(gui, "gui")
+    cli.add_command(borsa, "borsa")
     cli.add_command(tool, "tool")
     cli.add_command(registry, "registry")
     cli.add_command(config, "config")

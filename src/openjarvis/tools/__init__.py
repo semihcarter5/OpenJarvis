@@ -168,6 +168,11 @@ except ImportError:
     pass
 
 try:
+    import openjarvis.tools.borsa_tool  # noqa: F401
+except ImportError:
+    pass
+
+try:
     import openjarvis.tools.knowledge_search  # noqa: F401
 except ImportError:
     pass
